@@ -6,7 +6,6 @@ authors = ["Jeffery Utter <jeff@jeffutter.com>"]
 readme = "README.md"
 description = "Normalize (format and sort) GraphQL queries"
 license = "MIT"
-license-file = "../LICENSE"
 repository = "https://github.com/jeffutter/graphql-normalize"
 
 [dependencies]
