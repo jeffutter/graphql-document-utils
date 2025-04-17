@@ -15,6 +15,7 @@ use std::{
     fs,
 };
 
+/// Processes the schema and query files to prune unused types and fields.
 pub fn process(schema: PathBuf, query: PathBuf) {
     let schema_str = fs::read_to_string(schema).expect("Failed to read schema file");
     let query_str = fs::read_to_string(query).expect("Failed to read query file");
@@ -143,6 +144,7 @@ pub fn process(schema: PathBuf, query: PathBuf) {
     println!("{}", pruned_doc);
 }
 
+/// Collects used fields from the selection set.
 fn collect_used_fields<'a>(
     parent_type: &str,
     selection_set: &SelectionSet<String>,
@@ -222,6 +224,7 @@ fn collect_used_fields<'a>(
     }
 }
 
+/// Collects input types from the argument.
 fn collect_input_types<'a>(
     arg: &'a InputValue<'a, String>,
     used_types: &mut HashSet<String>,
@@ -237,6 +240,7 @@ fn collect_input_types<'a>(
     }
 }
 
+/// Gets the named type from a GraphQL type.
 fn get_named_type(t: &Type<String>) -> String {
     match t {
         Type::NamedType(name) => name.clone(),
@@ -244,6 +248,7 @@ fn get_named_type(t: &Type<String>) -> String {
     }
 }
 
+/// Retrieves fields for an object or interface type.
 fn type_fields<'a>(typ: &'a TypeDefinition<'a, String>) -> Option<&'a Vec<Field<'a, String>>> {
     match typ {
         TypeDefinition::Object(obj) => Some(&obj.fields),
@@ -252,6 +257,7 @@ fn type_fields<'a>(typ: &'a TypeDefinition<'a, String>) -> Option<&'a Vec<Field<
     }
 }
 
+/// Detects root types (Query, Mutation, Subscription) from the schema.
 fn detect_root_types(schema: &SchemaDoc<String>) -> RootTypes {
     let mut root = RootTypes {
         query: "Query".to_string(),
