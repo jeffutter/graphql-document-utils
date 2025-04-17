@@ -124,6 +124,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "graphql-document-utils"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "clap-stdin",
+ "graphql-normalize",
+ "graphql-parser",
+ "indoc",
+]
+
+[[package]]
 name = "graphql-normalize"
 version = "0.1.2"
 dependencies = [
@@ -138,17 +149,6 @@ checksum = "7a818c0d883d7c0801df27be910917750932be279c7bc82dc541b8769425f409"
 dependencies = [
  "combine",
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "graphql-utils"
-version = "0.1.0"
-dependencies = [
- "clap",
- "clap-stdin",
- "graphql-normalize",
- "graphql-parser",
- "indoc",
 ]
 
 [[package]]
@@ -183,9 +183,9 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.94"
+version = "1.0.95"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a31971752e70b8b2686d7e46ec17fb38dad4051d94024c88df49b667caea9c84"
+checksum = "02b3e5e68a3a1a02aad3ec490a98007cbc13c37cbe84a3cd7b8e406d76e7f778"
 dependencies = [
  "unicode-ident",
 ]

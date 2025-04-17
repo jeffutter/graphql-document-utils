@@ -1,5 +1,5 @@
 [package]
-name = "graphql-utils"
+name = "graphql-document-utils"
 version = "0.1.0"
 edition = "2021"
 authors = ["Jeffery Utter <jeff@jeffutter.com>"]
@@ -14,7 +14,7 @@ graphql-parser = "0.4.1"
 members = [ "graphql-normalize-lib" ]
 
 [[bin]]
-name = "graphql-utils"
+name = "graphql-document-utils"
 path = "src/main.rs"
 
 [dev-dependencies]
