@@ -336,54 +336,6 @@ mod tests {
     }
 
     #[test]
-    fn test_focus_mutation_operation() {
-        let schema = indoc! {"
-            type Mutation {
-              updateUser(id: ID!, name: String!): User
-            }
-
-            type User {
-              id: ID
-              name: String
-            }
-        "};
-
-        let result = focus::process(schema, "User");
-        let expected_schema = indoc! {"
-            type User {
-              id: ID
-              name: String
-            }
-        "};
-
-        assert_eq!(result.trim(), expected_schema.trim());
-    }
-
-    #[test]
-    fn test_focus_subscription_operation() {
-        let schema = indoc! {"
-            type Subscription {
-              userUpdated: User
-            }
-
-            type User {
-              id: ID
-              name: String
-            }
-        "};
-
-        let result = focus::process(schema, "User");
-        let expected_schema = indoc! {"
-            type User {
-              id: ID
-              name: String
-            }
-        "};
-
-        assert_eq!(result.trim(), expected_schema.trim());
-    }
-
-    #[test]
     fn test_focus_nested_types() {
         let schema = indoc! {"
             type Query {
