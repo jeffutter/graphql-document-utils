@@ -197,6 +197,7 @@ fn strip_unused_types<'a>(
 mod tests {
     use crate::focus;
     use indoc::indoc;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn test_focus_query_operation() {
@@ -297,6 +298,58 @@ mod tests {
         let expected_schema = indoc! {"
             type Company {
               employees: [Person]
+            }
+
+            interface Person {
+              name: String
+            }
+
+            type User implements Person {
+              id: ID
+              name: String
+              admin: Bool
+            }
+
+            type Guest implements Person {
+              id: ID
+              name: String
+            }
+        "};
+
+        assert_eq!(result.trim(), expected_schema.trim());
+    }
+
+    #[test]
+    fn test_non_null_nested_interface() {
+        let schema = indoc! {"
+            type Query {
+                company: Company
+            }
+
+            type Company {
+              employees: Person!
+            }
+
+            interface Person {
+              name: String
+            }
+
+            type User implements Person {
+              id: ID
+              name: String
+              admin: Bool
+            }
+
+            type Guest implements Person {
+              id: ID
+              name: String
+            }
+        "};
+
+        let result = focus::process(schema, "Company");
+        let expected_schema = indoc! {"
+            type Company {
+              employees: Person!
             }
 
             interface Person {
