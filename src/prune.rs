@@ -5,7 +5,7 @@ use graphql_parser::{
         SelectionSet, TypeCondition,
     },
     schema::{
-        parse_schema, Definition as SchemaDef, Document as SchemaDoc, Field, InputValue, Type,
+        parse_schema, Definition as SchemaDef, Document as SchemaDoc, Field, InputValue,
         TypeDefinition,
     },
 };
@@ -167,7 +167,7 @@ fn collect_used_fields<'a>(
                             .or_default()
                             .insert(field.name.clone());
 
-                        let nested_type = get_named_type(&schema_field.field_type);
+                        let nested_type = util::named_type(&schema_field.field_type).unwrap();
                         if used_types.insert(nested_type.clone()) {
                             // track for input arg traversal later
                         }
@@ -177,7 +177,7 @@ fn collect_used_fields<'a>(
                         }
 
                         collect_used_fields(
-                            &nested_type,
+                            nested_type,
                             &field.selection_set,
                             type_map,
                             used_fields,
@@ -230,21 +230,13 @@ fn collect_input_types<'a>(
     used_types: &mut HashSet<String>,
     type_map: &HashMap<String, &'a TypeDefinition<'a, String>>,
 ) {
-    let inner = get_named_type(&arg.value_type);
+    let inner = util::named_type(&arg.value_type).unwrap();
     if used_types.insert(inner.clone()) {
-        if let Some(TypeDefinition::InputObject(input_obj)) = type_map.get(&inner) {
+        if let Some(TypeDefinition::InputObject(input_obj)) = type_map.get(inner) {
             for field in &input_obj.fields {
                 collect_input_types(field, used_types, type_map);
             }
         }
-    }
-}
-
-/// Gets the named type from a GraphQL type.
-fn get_named_type(t: &Type<String>) -> String {
-    match t {
-        Type::NamedType(name) => name.clone(),
-        Type::ListType(inner) | Type::NonNullType(inner) => get_named_type(inner),
     }
 }
 
