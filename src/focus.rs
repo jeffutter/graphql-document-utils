@@ -1,174 +1,86 @@
+use crate::util;
 use graphql_parser::parse_schema;
-use graphql_parser::schema::{
-    Definition, Document, Field, InputObjectType, InputValue, InterfaceType, ObjectType, Type,
-    TypeDefinition,
-};
-use std::collections::{HashSet, VecDeque};
-
-use crate::util::{self, SchemaWalker};
+use graphql_parser::schema::{Definition, Document, TypeDefinition};
+use petgraph::graph::NodeIndex;
+use petgraph::visit::Walker;
+use std::collections::{HashMap, HashSet};
 
 pub fn process(schema: &str, r#type: &str) -> String {
     let schema_ast = parse_schema::<String>(schema).expect("Invalid schema");
 
-    // let used = find_used_types(&schema_ast, r#type);
-    let mut utc = UsedTypeCollector::new(r#type.to_string());
-    utc.walk_schema(&schema_ast);
-    let UsedTypeCollector { used, .. } = utc;
+    let mut g: petgraph::Graph<&String, ()> = petgraph::Graph::new();
+    let mut type_node_map: HashMap<&String, NodeIndex> = HashMap::new();
 
-    strip_unused_types(&schema_ast, used)
-    // strip_unused_types(&schema_ast, used.iter().collect())
-}
+    for definition in schema_ast.definitions.iter() {
+        match definition {
+            Definition::SchemaDefinition(_schema_definition) => (),
+            Definition::TypeDefinition(type_definition) => match type_definition {
+                TypeDefinition::Scalar(_scalar_type) => (),
+                TypeDefinition::Object(object_type) => {
+                    let idx = *type_node_map
+                        .entry(&object_type.name)
+                        .or_insert_with(|| g.add_node(&object_type.name));
 
-#[derive(Debug)]
-struct UsedTypeCollector<'a> {
-    used: HashSet<&'a String>,
-    root_type: String,
-}
+                    for field in &object_type.fields {
+                        let tn = util::named_type(&field.field_type).unwrap();
 
-impl UsedTypeCollector<'_> {
-    fn new(root_type: String) -> Self {
-        Self {
-            used: HashSet::new(),
-            root_type,
-        }
-    }
-}
+                        let tn_idx = type_node_map.entry(tn).or_insert_with(|| g.add_node(tn));
 
-impl<'a> util::SchemaWalker<'a, String, String, HashSet<&'a String>> for UsedTypeCollector<'a> {
-    fn select_object_fields(
-        &mut self,
-        obj: &'a ObjectType<'a, String>,
-        path: &[&'a String],
-    ) -> Vec<&'a Field<'a, String>> {
-        if obj.name == self.root_type || path.contains(&&self.root_type) {
-            return obj.fields.iter().collect();
-        }
-
-        obj.fields
-            .iter()
-            .filter(|f| self.root_type == f.name)
-            .collect()
-    }
-
-    fn select_interface_fields(
-        &mut self,
-        iface: &'a InterfaceType<'a, String>,
-        path: &[&'a String],
-    ) -> Vec<&'a Field<'a, String>> {
-        if iface.name == self.root_type || path.contains(&&self.root_type) {
-            return iface.fields.iter().collect();
-        }
-
-        iface
-            .fields
-            .iter()
-            .filter(|f| self.root_type == f.name)
-            .collect()
-    }
-
-    fn select_input_fields(
-        &mut self,
-        input: &'a InputObjectType<'a, String>,
-        path: &[&'a String],
-    ) -> Vec<&'a InputValue<'a, String>> {
-        if input.name == self.root_type || path.contains(&&self.root_type) {
-            return input.fields.iter().collect();
-        }
-
-        input
-            .fields
-            .iter()
-            .filter(|f| self.root_type == f.name)
-            .collect()
-    }
-
-    fn visit_field(&mut self, field: &'a Field<'a, String>, path: &[&'a String]) {
-        if field.name == self.root_type || path.contains(&&self.root_type) {
-            self.used
-                .insert(util::named_type(&field.field_type).unwrap());
-        }
-    }
-
-    fn visit_type_definition(&mut self, ty: &'a TypeDefinition<'a, String>, path: &[&'a String]) {
-        let type_name = util::schema_type_definition_name(ty).unwrap();
-        if type_name == &self.root_type || path.contains(&&self.root_type) {
-            self.used.insert(type_name);
-        }
-    }
-}
-
-// Identifies and returns a set of used type names in the GraphQL schema.
-// It starts from the specified root type and operation name, then recursively explores
-// all related types to determine which types are utilized.
-fn find_used_types<'a>(schema: &'a Document<'a, String>, r#type: &str) -> HashSet<String> {
-    let mut used_types = HashSet::new();
-    let mut queue = VecDeque::new();
-
-    queue.push_back(r#type.to_string());
-
-    while let Some(type_name) = queue.pop_front() {
-        if !used_types.insert(type_name.clone()) {
-            continue;
-        }
-
-        for def in schema.definitions.iter() {
-            if util::schema_definition_name(def) != Some(&type_name) {
-                continue;
-            }
-            match def {
-                Definition::SchemaDefinition(_) => (),
-                Definition::TypeDefinition(td) => match td {
-                    TypeDefinition::Scalar(_) => (),
-                    TypeDefinition::Object(object_type) => {
-                        for f in &object_type.fields {
-                            queue.push_back(get_base_type(&f.field_type));
-                        }
+                        g.add_edge(idx, *tn_idx, ());
                     }
-                    TypeDefinition::Interface(interface_type) => {
-                        for f in &interface_type.fields {
-                            queue.push_back(get_base_type(&f.field_type));
-                        }
 
-                        for d in schema.definitions.iter() {
-                            if let Definition::TypeDefinition(TypeDefinition::Object(o)) = d {
-                                if o.implements_interfaces
-                                    .iter()
-                                    .any(|i| i == &interface_type.name)
-                                {
-                                    queue.push_back(o.name.clone());
-                                }
-                            }
-                        }
+                    for i in &object_type.implements_interfaces {
+                        let i_idx = type_node_map.entry(i).or_insert_with(|| g.add_node(i));
+
+                        g.add_edge(idx, *i_idx, ());
+                        g.add_edge(*i_idx, idx, ());
                     }
-                    TypeDefinition::Union(union_type) => {
-                        for t in &union_type.types {
-                            queue.push_back(t.clone());
-                        }
+                }
+                TypeDefinition::Interface(interface_type) => {
+                    type_node_map
+                        .entry(&interface_type.name)
+                        .or_insert_with(|| g.add_node(&interface_type.name));
+                }
+                TypeDefinition::Union(union_type) => {
+                    let idx = *type_node_map
+                        .entry(&union_type.name)
+                        .or_insert_with(|| g.add_node(&union_type.name));
+
+                    for ty in union_type.types.iter() {
+                        let ty_idx = type_node_map.entry(ty).or_insert_with(|| g.add_node(ty));
+                        g.add_edge(idx, *ty_idx, ());
                     }
-                    TypeDefinition::Enum(_) => (),
-                    TypeDefinition::InputObject(input_object_type) => {
-                        for f in &input_object_type.fields {
-                            queue.push_back(get_base_type(&f.value_type));
-                        }
+                }
+                TypeDefinition::Enum(enum_type) => {
+                    type_node_map
+                        .entry(&enum_type.name)
+                        .or_insert_with(|| g.add_node(&enum_type.name));
+                }
+                TypeDefinition::InputObject(input_object_type) => {
+                    let idx = *type_node_map
+                        .entry(&input_object_type.name)
+                        .or_insert_with(|| g.add_node(&input_object_type.name));
+
+                    for field in &input_object_type.fields {
+                        let tn = util::named_type(&field.value_type).unwrap();
+
+                        let tn_idx = type_node_map.entry(tn).or_insert_with(|| g.add_node(tn));
+                        g.add_edge(idx, *tn_idx, ());
                     }
-                },
-                Definition::TypeExtension(_) => (),
-                Definition::DirectiveDefinition(_) => (),
-            }
+                }
+            },
+            Definition::TypeExtension(_type_extension) => (),
+            Definition::DirectiveDefinition(_directive_definition) => (),
         }
     }
 
-    used_types
-}
+    if let Some(root_idx) = type_node_map.get(&String::from(r#type)) {
+        let dfs = petgraph::visit::Dfs::new(&g, *root_idx);
+        let used: HashSet<&String> = dfs.iter(&g).map(|n| g[n]).collect();
 
-/// Extracts the base type name from a GraphQL Type.
-/// It handles NamedType, ListType, and NonNullType by recursively resolving to the underlying named type.
-fn get_base_type(t: &Type<String>) -> String {
-    match t {
-        graphql_parser::schema::Type::NamedType(name) => name.clone(),
-        graphql_parser::schema::Type::ListType(inner) => get_base_type(inner),
-        graphql_parser::schema::Type::NonNullType(inner) => get_base_type(inner),
+        return strip_unused_types(&schema_ast, used);
     }
+    String::from("")
 }
 
 /// Removes unused types from the GraphQL schema.
