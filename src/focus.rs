@@ -32,14 +32,27 @@ pub fn process(schema: &str, r#type: &str) -> String {
                     for i in &object_type.implements_interfaces {
                         let i_idx = type_node_map.entry(i).or_insert_with(|| g.add_node(i));
 
-                        g.add_edge(idx, *i_idx, ());
                         g.add_edge(*i_idx, idx, ());
                     }
                 }
                 TypeDefinition::Interface(interface_type) => {
-                    type_node_map
+                    let idx = *type_node_map
                         .entry(&interface_type.name)
                         .or_insert_with(|| g.add_node(&interface_type.name));
+
+                    for field in &interface_type.fields {
+                        let tn = util::named_type(&field.field_type).unwrap();
+
+                        let tn_idx = type_node_map.entry(tn).or_insert_with(|| g.add_node(tn));
+
+                        g.add_edge(idx, *tn_idx, ());
+                    }
+
+                    for i in &interface_type.implements_interfaces {
+                        let i_idx = type_node_map.entry(i).or_insert_with(|| g.add_node(i));
+
+                        g.add_edge(*i_idx, idx, ());
+                    }
                 }
                 TypeDefinition::Union(union_type) => {
                     let idx = *type_node_map
