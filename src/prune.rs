@@ -9,19 +9,12 @@ use graphql_parser::{
         TypeDefinition,
     },
 };
-use std::path::PathBuf;
-use std::{
-    collections::{HashMap, HashSet},
-    fs,
-};
+use std::collections::{HashMap, HashSet};
 
 /// Processes the schema and query files to prune unused types and fields.
-pub fn process(schema: PathBuf, query: PathBuf) {
-    let schema_str = fs::read_to_string(schema).expect("Failed to read schema file");
-    let query_str = fs::read_to_string(query).expect("Failed to read query file");
-
-    let schema_doc = parse_schema::<String>(&schema_str).expect("Failed to parse schema");
-    let query_doc = parse_query::<String>(&query_str).expect("Failed to parse query");
+pub fn process(schema: &str, query: &str) -> String {
+    let schema_doc = parse_schema::<String>(schema).expect("Failed to parse schema");
+    let query_doc = parse_query::<String>(query).expect("Failed to parse query");
 
     let schema_doc_copy = schema_doc.clone();
 
@@ -55,7 +48,6 @@ pub fn process(schema: PathBuf, query: PathBuf) {
     let root_types = detect_root_types(&schema_doc);
 
     let mut used_fields: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut used_types: HashSet<String> = HashSet::new();
 
     for def in &query_doc.definitions {
         if let QueryDef::Operation(op) = def {
@@ -71,13 +63,12 @@ pub fn process(schema: PathBuf, query: PathBuf) {
                 ),
                 OperationDefinition::SelectionSet(ss) => (root_types.query.as_str(), ss),
             };
-            used_types.insert(op_type.to_string());
+            used_fields.insert(op_type.to_string(), HashSet::new());
             collect_used_fields(
                 op_type,
                 selection_set,
                 &type_map,
                 &mut used_fields,
-                &mut used_types,
                 &fragments,
             );
         }
@@ -88,26 +79,39 @@ pub fn process(schema: PathBuf, query: PathBuf) {
         .iter()
         .filter_map(|def| match def {
             SchemaDef::TypeDefinition(ref td) => match td {
-                TypeDefinition::Object(obj) if used_types.contains(&obj.name) => {
-                    let kept_fields = obj
-                        .fields
-                        .clone()
-                        .into_iter()
-                        .filter(|f| {
-                            used_fields
-                                .get(&obj.name)
-                                .is_some_and(|set| set.contains(&f.name))
-                        })
-                        .collect();
+                TypeDefinition::Object(obj) => {
+                    let include_object = used_fields.contains_key(&obj.name)
+                        || obj
+                            .implements_interfaces
+                            .iter()
+                            .any(|i| used_fields.contains_key(i));
 
-                    Some(SchemaDef::TypeDefinition(TypeDefinition::Object(
-                        graphql_parser::schema::ObjectType {
-                            fields: kept_fields,
-                            ..obj.clone()
-                        },
-                    )))
+                    if include_object {
+                        let kept_fields = obj
+                            .fields
+                            .clone()
+                            .into_iter()
+                            .filter(|f| {
+                                used_fields
+                                    .get(&obj.name)
+                                    .is_some_and(|set| set.contains(&f.name))
+                                    || obj.implements_interfaces.iter().any(|i| {
+                                        used_fields.get(i).is_some_and(|set| set.contains(&f.name))
+                                    })
+                            })
+                            .collect();
+
+                        return Some(SchemaDef::TypeDefinition(TypeDefinition::Object(
+                            graphql_parser::schema::ObjectType {
+                                fields: kept_fields,
+                                ..obj.clone()
+                            },
+                        )));
+                    }
+
+                    None
                 }
-                TypeDefinition::Interface(iface) if used_types.contains(&iface.name) => {
+                TypeDefinition::Interface(iface) if used_fields.contains_key(&iface.name) => {
                     let kept_fields = iface
                         .fields
                         .clone()
@@ -126,7 +130,7 @@ pub fn process(schema: PathBuf, query: PathBuf) {
                         },
                     )))
                 }
-                _ if used_types.contains(util::schema_type_definition_name(td).unwrap()) => {
+                _ if used_fields.contains_key(util::schema_type_definition_name(td).unwrap()) => {
                     Some(SchemaDef::TypeDefinition(td.clone()))
                 }
                 _ => None,
@@ -141,7 +145,7 @@ pub fn process(schema: PathBuf, query: PathBuf) {
         definitions: pruned_defs,
     };
 
-    println!("{}", pruned_doc);
+    format!("{}", pruned_doc)
 }
 
 /// Collects used fields from the selection set.
@@ -150,7 +154,6 @@ fn collect_used_fields<'a>(
     selection_set: &SelectionSet<String>,
     type_map: &HashMap<String, &'a TypeDefinition<'a, String>>,
     used_fields: &mut HashMap<String, HashSet<String>>,
-    used_types: &mut HashSet<String>,
     fragments: &HashMap<String, &'a FragmentDefinition<'a, String>>,
 ) {
     if let Some(parent_def) = type_map.get(parent_type) {
@@ -162,15 +165,16 @@ fn collect_used_fields<'a>(
                     if let Some(schema_field) =
                         fields.and_then(|fields| fields.iter().find(|f| f.name == field.name))
                     {
-                        used_fields
-                            .entry(parent_type.to_string())
-                            .or_default()
-                            .insert(field.name.clone());
+                        let used_types = used_fields.entry(parent_type.to_string()).or_default();
+                        used_types.insert(field.name.clone());
 
                         let nested_type = util::named_type(&schema_field.field_type).unwrap();
-                        if used_types.insert(nested_type.clone()) {
-                            // track for input arg traversal later
-                        }
+                        // if used_fields
+                        //     .insert(nested_type.clone(), HashSet::new())
+                        //     .is_none()
+                        // {
+                        //     // track for input arg traversal later
+                        // }
 
                         for arg in &schema_field.arguments {
                             collect_input_types(arg, used_types, type_map);
@@ -181,7 +185,6 @@ fn collect_used_fields<'a>(
                             &field.selection_set,
                             type_map,
                             used_fields,
-                            used_types,
                             fragments,
                         );
                     }
@@ -189,13 +192,12 @@ fn collect_used_fields<'a>(
                 Selection::FragmentSpread(spread) => {
                     if let Some(frag) = fragments.get(&spread.fragment_name) {
                         let TypeCondition::On(type_condition) = &frag.type_condition;
-                        used_types.insert(type_condition.clone());
+                        used_fields.insert(type_condition.clone(), HashSet::new());
                         collect_used_fields(
                             type_condition,
                             &frag.selection_set,
                             type_map,
                             used_fields,
-                            used_types,
                             fragments,
                         );
                     }
@@ -209,13 +211,12 @@ fn collect_used_fields<'a>(
                         })
                         .unwrap_or(parent_type.to_string());
 
-                    used_types.insert(type_name.to_string());
+                    used_fields.insert(type_name.to_string(), HashSet::new());
                     collect_used_fields(
                         &type_name,
                         &frag.selection_set,
                         type_map,
                         used_fields,
-                        used_types,
                         fragments,
                     );
                 }
@@ -278,4 +279,136 @@ struct RootTypes {
     query: String,
     mutation: Option<String>,
     subscription: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::prune;
+    use indoc::indoc;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn prunes_fields() {
+        let schema = indoc! {"
+            type Query {
+              user: User
+            }
+
+            type User {
+              id: ID!
+              name: String
+              first_name: String
+              last_name: String
+            }
+        "};
+
+        let query = indoc! {"
+            query User {
+              user {
+                id
+                name
+              }
+            }
+        "};
+
+        let result = prune::process(schema, query);
+
+        assert_eq!(
+            result,
+            indoc! {"
+                type Query {
+                  user: User
+                }
+
+                type User {
+                  id: ID!
+                  name: String
+                }
+            "}
+        );
+    }
+
+    #[test]
+    fn prunes_interface_fields() {
+        let schema = indoc! {"
+            type Query {
+              person: Person
+            }
+
+            interface Person {
+              id: ID!
+              name: String
+              first_name: String
+              last_name: String
+            }
+
+            type User implements Person {
+              id: ID!
+              name: String
+              first_name: String
+              last_name: String
+              user_name: String
+              login: String
+            }
+
+            type Customer implements Person {
+              id: ID!
+              name: String
+              first_name: String
+              last_name: String
+              last_visited: String
+            }
+
+            type Guest implements Person {
+              id: ID!
+              name: String
+              first_name: String
+              last_name: String
+            }
+        "};
+
+        let query = indoc! {"
+            query Person {
+              person {
+                id
+                name
+                ... on User {
+                  user_name
+                }
+              }
+            }
+        "};
+
+        let result = prune::process(schema, query);
+
+        assert_eq!(
+            result,
+            indoc! {"
+                type Query {
+                  person: Person
+                }
+
+                interface Person {
+                  id: ID!
+                  name: String
+                }
+
+                type User implements Person {
+                  id: ID!
+                  name: String
+                  user_name: String
+                }
+
+                type Customer implements Person {
+                  id: ID!
+                  name: String
+                }
+
+                type Guest implements Person {
+                  id: ID!
+                  name: String
+                }
+            "}
+        );
+    }
 }

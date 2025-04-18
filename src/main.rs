@@ -89,7 +89,11 @@ fn main() {
                 println!("{}", focused);
             }
             SchemaCommands::Prune { schema, query } => {
-                prune::process(schema, query);
+                let schema_str = fs::read_to_string(schema).expect("Failed to read schema file");
+                let query_str = fs::read_to_string(query).expect("Failed to read query file");
+                let pruned = prune::process(&schema_str, &query_str);
+
+                println!("{}", pruned);
             }
         },
     }
