@@ -5,7 +5,7 @@ use petgraph::graph::NodeIndex;
 use petgraph::visit::Walker;
 use std::collections::{HashMap, HashSet};
 
-pub fn process(schema: &str, r#type: &str) -> String {
+pub fn process(schema: &str, types: &[&str]) -> String {
     let schema_ast = parse_schema::<String>(schema).expect("Invalid schema");
 
     let mut g: petgraph::Graph<&String, ()> = petgraph::Graph::new();
@@ -87,13 +87,22 @@ pub fn process(schema: &str, r#type: &str) -> String {
         }
     }
 
-    if let Some(root_idx) = type_node_map.get(&String::from(r#type)) {
-        let dfs = petgraph::visit::Dfs::new(&g, *root_idx);
-        let used: HashSet<&String> = dfs.iter(&g).map(|n| g[n]).collect();
+    let used: HashSet<&String> = types
+        .iter()
+        .flat_map(|t| {
+            if let Some(root_idx) = type_node_map.get(&String::from(*t)) {
+                let dfs = petgraph::visit::Dfs::new(&g, *root_idx);
+                return dfs.iter(&g).map(|n| g[n]).collect();
+            }
+            Vec::new()
+        })
+        .collect();
 
-        return strip_unused_types(&schema_ast, used);
+    if used.is_empty() {
+        return String::from("");
     }
-    String::from("")
+
+    strip_unused_types(&schema_ast, used)
 }
 
 /// Removes unused types from the GraphQL schema.
@@ -137,9 +146,44 @@ mod tests {
             }
         "};
 
-        let result = focus::process(schema, "User");
+        let result = focus::process(schema, &["User"]);
         let expected_schema = indoc! {"
             type User {
+              id: ID
+              name: String
+            }
+        "};
+
+        assert_eq!(result.trim(), expected_schema.trim());
+    }
+
+    #[test]
+    fn test_focus_multiple_types() {
+        let schema = indoc! {"
+            type Query {
+              user: User
+              company: Company
+            }
+
+            type User {
+              id: ID
+              name: String
+            }
+
+            type Company {
+              id: ID
+              name: String
+            }
+        "};
+
+        let result = focus::process(schema, &["User", "Company"]);
+        let expected_schema = indoc! {"
+            type User {
+              id: ID
+              name: String
+            }
+
+            type Company {
               id: ID
               name: String
             }
@@ -171,7 +215,7 @@ mod tests {
             }
         "};
 
-        let result = focus::process(schema, "Person");
+        let result = focus::process(schema, &["Person"]);
         let expected_schema = indoc! {"
             interface Person {
               name: String
@@ -219,7 +263,7 @@ mod tests {
             }
         "};
 
-        let result = focus::process(schema, "Company");
+        let result = focus::process(schema, &["Company"]);
         let expected_schema = indoc! {"
             type Company {
               employees: [Person]
@@ -271,7 +315,7 @@ mod tests {
             }
         "};
 
-        let result = focus::process(schema, "Company");
+        let result = focus::process(schema, &["Company"]);
         let expected_schema = indoc! {"
             type Company {
               employees: Person!
@@ -309,7 +353,7 @@ mod tests {
             }
         "};
 
-        let result = focus::process(schema, "nonExistent");
+        let result = focus::process(schema, &["nonExistent"]);
         assert_eq!(result.trim(), "");
     }
 
@@ -330,7 +374,7 @@ mod tests {
             }
         "};
 
-        let result = focus::process(schema, "User");
+        let result = focus::process(schema, &["User"]);
         let expected_schema = indoc! {"
             type User {
               id: ID
@@ -366,7 +410,7 @@ mod tests {
             }
         "};
 
-        let result = focus::process(schema, "User");
+        let result = focus::process(schema, &["User"]);
         let expected_schema = indoc! {"
             type User {
               id: ID

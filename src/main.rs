@@ -44,8 +44,8 @@ enum SchemaCommands {
         #[arg(short, long)]
         schema: PathBuf,
 
-        #[arg(short, long)]
-        r#type: String,
+        #[arg(num_args = 1..)]
+        types: Vec<String>,
     },
     Prune {
         #[arg(short, long)]
@@ -82,9 +82,10 @@ fn main() {
                     parse_schema::<String>(&schema_str).expect("Failed to parse schema");
                 println!("{}", schema_doc);
             }
-            SchemaCommands::Focus { schema, r#type } => {
+            SchemaCommands::Focus { schema, types } => {
                 let schema_str = fs::read_to_string(&schema).expect("Failed to read schema file");
-                let focused = focus::process(&schema_str, &r#type);
+                let types: Vec<&str> = types.iter().map(|s| s.as_str()).collect();
+                let focused = focus::process(&schema_str, &types);
 
                 println!("{}", focused);
             }
