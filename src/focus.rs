@@ -124,7 +124,7 @@ fn strip_unused_types<'a>(
         definitions: retained.into_iter().cloned().collect(),
     };
 
-    format!("{}", result_doc)
+    format!("{result_doc}")
 }
 
 #[cfg(test)]

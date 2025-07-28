@@ -74,9 +74,9 @@ fn main() {
                     let minified =
                         graphql_parser::minify_query(normalized).expect("Could not minify");
 
-                    println!("{}", minified);
+                    println!("{minified}");
                 } else {
-                    println!("{}", normalized);
+                    println!("{normalized}");
                 }
             }
         },
@@ -85,27 +85,27 @@ fn main() {
                 let schema_str = fs::read_to_string(schema).expect("Failed to read schema file");
                 let schema_doc =
                     parse_schema::<String>(&schema_str).expect("Failed to parse schema");
-                println!("{}", schema_doc);
+                println!("{schema_doc}");
             }
             SchemaCommands::Focus { schema, types } => {
                 let schema_str = fs::read_to_string(&schema).expect("Failed to read schema file");
                 let types: Vec<&str> = types.iter().map(|s| s.as_str()).collect();
                 let focused = focus::process(&schema_str, &types);
 
-                println!("{}", focused);
+                println!("{focused}");
             }
             SchemaCommands::Prune { schema, query } => {
                 let schema_str = fs::read_to_string(schema).expect("Failed to read schema file");
                 let query_str = fs::read_to_string(query).expect("Failed to read query file");
                 let pruned = prune::process(&schema_str, &query_str);
 
-                println!("{}", pruned);
+                println!("{pruned}");
             }
             SchemaCommands::Sort { schema } => {
                 let schema_str = fs::read_to_string(schema).expect("Failed to read schema file");
                 let sorted = sort::process(&schema_str);
 
-                println!("{}", sorted);
+                println!("{sorted}");
             }
         },
     }

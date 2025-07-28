@@ -7,7 +7,7 @@ pub fn normalize(s: &str) -> Result<String, Box<dyn std::error::Error>> {
     let document = query::parse_query::<String>(s)?;
     let mut doc = Doc::new(document);
     doc.normalize();
-    Ok(format!("{}", doc))
+    Ok(format!("{doc}"))
 }
 
 struct Doc<'a>(Document<'a, String>);

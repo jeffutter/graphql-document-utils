@@ -45,7 +45,7 @@ pub fn process(schema: &str) -> String {
         definitions: sorted_definitions,
     };
 
-    format!("{}", sorted_doc)
+    format!("{sorted_doc}")
 }
 
 #[cfg(test)]

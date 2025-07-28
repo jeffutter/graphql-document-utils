@@ -145,7 +145,7 @@ pub fn process(schema: &str, query: &str) -> String {
         definitions: pruned_defs,
     };
 
-    format!("{}", pruned_doc)
+    format!("{pruned_doc}")
 }
 
 /// Collects used fields from the selection set.
