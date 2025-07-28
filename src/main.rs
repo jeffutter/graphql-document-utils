@@ -1,5 +1,6 @@
 mod focus;
 mod prune;
+mod sort;
 mod util;
 
 use std::{fs, path::PathBuf};
@@ -54,6 +55,10 @@ enum SchemaCommands {
         #[arg(short, long)]
         query: PathBuf,
     },
+    Sort {
+        #[arg(short, long)]
+        schema: PathBuf,
+    },
 }
 
 fn main() {
@@ -95,6 +100,12 @@ fn main() {
                 let pruned = prune::process(&schema_str, &query_str);
 
                 println!("{}", pruned);
+            }
+            SchemaCommands::Sort { schema } => {
+                let schema_str = fs::read_to_string(schema).expect("Failed to read schema file");
+                let sorted = sort::process(&schema_str);
+
+                println!("{}", sorted);
             }
         },
     }

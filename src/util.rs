@@ -1,5 +1,5 @@
 use graphql_parser::query::Text;
-use graphql_parser::schema::{Definition, Type, TypeDefinition};
+use graphql_parser::schema::{Definition, Type, TypeDefinition, TypeExtension};
 
 pub fn schema_definition_name<'a, V, D: Text<'a, Value = V>>(
     d: &'a Definition<'a, D>,
