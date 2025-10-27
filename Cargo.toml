@@ -6,7 +6,7 @@ authors = ["Jeffery Utter <jeff@jeffutter.com>"]
 
 [dependencies]
 clap = { version = "4.5.28", features = ["derive"] }
-clap-stdin = "0.6.0"
+clap-stdin = "0.8.0"
 graphql-normalize = { path = "graphql-normalize-lib" }
 graphql-parser = "0.4.1"
 petgraph = "0.8.2"
