@@ -20,4 +20,4 @@ name = "graphql-document-utils"
 path = "src/main.rs"
 
 [dev-dependencies]
-indoc = "2.0.6"
+indoc = "2.0.7"
