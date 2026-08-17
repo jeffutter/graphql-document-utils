@@ -8,5 +8,9 @@ description = "Normalize (format and sort) GraphQL queries"
 license = "MIT"
 repository = "https://github.com/jeffutter/graphql-document-utils"
 
+[package.metadata.release]
+# Prefixed so library releases don't trip the CD workflow's `[v]?X.Y.Z` binary build.
+tag-name = "{{crate_name}}-v{{version}}"
+
 [dependencies]
 graphql-parser = "0.4.1"

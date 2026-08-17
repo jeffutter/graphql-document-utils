@@ -59,6 +59,23 @@ The binary will be available at `target/release/graphql-document-utils`.
 3. Run `cargo build` to build the project
 4. Run `cargo test` to run the test suite
 
+### Releasing
+
+Releases are cut with [cargo-release](https://github.com/crate-ci/cargo-release)
+(included in the Nix dev shell, or `cargo install cargo-release`). The two crates
+are versioned independently, so release one at a time from `main`:
+
+```bash
+cargo release patch                                    # the binary: tags vX.Y.Z
+cargo release patch -p graphql-normalize               # the library: tags graphql-normalize-vX.Y.Z
+```
+
+Both commands are a dry run until you add `--execute`. They run the test suite,
+bump the version, commit, tag, and push; pushing a `vX.Y.Z` tag is what triggers
+the CD workflow to build and attach the release binaries. `graphql-normalize`
+also publishes to crates.io; the binary crate does not (flip `publish` under
+`[package.metadata.release]` in `Cargo.toml` to change that).
+
 ## Usage
 
 ### Query Commands

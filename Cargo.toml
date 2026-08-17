@@ -3,6 +3,10 @@ name = "graphql-document-utils"
 version = "0.1.0"
 edition = "2021"
 authors = ["Jeffery Utter <jeff@jeffutter.com>"]
+readme = "README.md"
+description = "Utilities to process GraphQL query and schema documents"
+license = "MIT"
+repository = "https://github.com/jeffutter/graphql-document-utils"
 
 [dependencies]
 clap = { version = "4.5.28", features = ["derive"] }
@@ -14,6 +18,18 @@ pretty_assertions = "1.4.1"
 
 [workspace]
 members = [ "graphql-normalize-lib" ]
+
+# Crates are versioned independently, so release one at a time:
+#   cargo release -p graphql-document-utils <level>
+[workspace.metadata.release]
+allow-branch = ["main"]
+pre-release-hook = ["cargo", "test", "--workspace", "--all-features"]
+
+[package.metadata.release]
+# Distributed as GitHub release binaries, not on crates.io.
+publish = false
+# The CD workflow only builds binaries for tags matching `[v]?X.Y.Z`.
+tag-name = "v{{version}}"
 
 [[bin]]
 name = "graphql-document-utils"

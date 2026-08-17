@@ -54,6 +54,18 @@ cargo fmt                     # Format code
 cargo clippy                  # Run linter
 ```
 
+### Release
+Uses `cargo-release`; the two crates are versioned independently and released one
+at a time from `main`. Dry run by default — add `--execute` to actually release.
+```bash
+cargo release patch                       # binary crate, tags vX.Y.Z (triggers the CD workflow)
+cargo release patch -p graphql-normalize  # library crate, tags graphql-normalize-vX.Y.Z, publishes to crates.io
+```
+Config lives in `[workspace.metadata.release]` / `[package.metadata.release]` in
+each `Cargo.toml`. The binary crate has `publish = false` (distributed as GitHub
+release assets) and a bare `v{{version}}` tag, since `.github/workflows/cd.yml`
+only builds tags matching `[v]?X.Y.Z`.
+
 ## CLI Usage Examples
 
 ```bash
