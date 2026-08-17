@@ -5,8 +5,7 @@ use graphql_parser::{
         SelectionSet, TypeCondition,
     },
     schema::{
-        parse_schema, Definition as SchemaDef, Document as SchemaDoc, Field, InputValue,
-        TypeDefinition,
+        parse_schema, Definition as SchemaDef, Document as SchemaDoc, InputValue, TypeDefinition,
     },
 };
 use std::collections::{HashMap, HashSet};
@@ -45,7 +44,7 @@ pub fn process(schema: &str, query: &str) -> String {
         })
         .collect();
 
-    let root_types = detect_root_types(&schema_doc);
+    let root_types = util::detect_root_types(&schema_doc);
 
     let mut used_fields: HashMap<String, HashSet<String>> = HashMap::new();
 
@@ -157,7 +156,7 @@ fn collect_used_fields<'a>(
     fragments: &HashMap<String, &'a FragmentDefinition<'a, String>>,
 ) {
     if let Some(parent_def) = type_map.get(parent_type) {
-        let fields = type_fields(parent_def);
+        let fields = util::type_fields(parent_def);
 
         for selection in &selection_set.items {
             match selection {
@@ -239,46 +238,6 @@ fn collect_input_types<'a>(
             }
         }
     }
-}
-
-/// Retrieves fields for an object or interface type.
-fn type_fields<'a>(typ: &'a TypeDefinition<'a, String>) -> Option<&'a Vec<Field<'a, String>>> {
-    match typ {
-        TypeDefinition::Object(obj) => Some(&obj.fields),
-        TypeDefinition::Interface(iface) => Some(&iface.fields),
-        _ => None,
-    }
-}
-
-/// Detects root types (Query, Mutation, Subscription) from the schema.
-fn detect_root_types(schema: &SchemaDoc<String>) -> RootTypes {
-    let mut root = RootTypes {
-        query: "Query".to_string(),
-        mutation: None,
-        subscription: None,
-    };
-
-    for def in &schema.definitions {
-        if let SchemaDef::SchemaDefinition(schema_def) = def {
-            if let Some(query) = &schema_def.query {
-                root.query = query.clone();
-            }
-            if let Some(mutation) = &schema_def.mutation {
-                root.mutation = Some(mutation.clone());
-            }
-            if let Some(subscription) = &schema_def.subscription {
-                root.subscription = Some(subscription.clone());
-            }
-        }
-    }
-
-    root
-}
-
-struct RootTypes {
-    query: String,
-    mutation: Option<String>,
-    subscription: Option<String>,
 }
 
 #[cfg(test)]
