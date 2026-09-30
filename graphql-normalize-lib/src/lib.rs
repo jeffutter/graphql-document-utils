@@ -1,8 +1,13 @@
-use graphql_parser::query::{
-    self, Definition, Directive, Document, Selection, Value, VariableDefinition,
-};
+use graphql_parser::query::{self, Definition, Directive, Document, Selection, VariableDefinition};
 use std::fmt::Display;
 
+/// Parses a GraphQL query document and prints it back in a canonical order.
+///
+/// Definitions, selections, directives, variable definitions, and argument
+/// names are sorted. Argument values are left as written: list items keep
+/// their order, since that order is meaningful (`orderBy: [...]`, positional
+/// inputs). Input object fields come out sorted by key wherever they appear,
+/// because the parser stores them in a `BTreeMap`.
 pub fn normalize(s: &str) -> Result<String, Box<dyn std::error::Error>> {
     let document = query::parse_query::<String>(s)?;
     let mut doc = Doc::new(document);
@@ -132,9 +137,6 @@ fn normalize_selection_set(selections: &mut [Selection<String>]) {
 
 fn normalize_directives(directives: &mut [Directive<String>]) {
     for directive in directives.iter_mut() {
-        for (_argument, value) in directive.arguments.iter_mut() {
-            normalize_value(value);
-        }
         directive.arguments.sort_by_key(|(k, _v)| k.to_lowercase());
     }
 
@@ -142,49 +144,90 @@ fn normalize_directives(directives: &mut [Directive<String>]) {
 }
 
 fn normalize_variable_definitions(variable_definitions: &mut [VariableDefinition<String>]) {
-    for variable_definition in variable_definitions.iter_mut() {
-        if let Some(default_value) = &mut variable_definition.default_value {
-            normalize_value(default_value);
-        }
-    }
-
     variable_definitions.sort_by_key(|vd| vd.name.to_lowercase());
 }
 
-fn normalize_value(value: &mut Value<String>) {
-    match value {
-        query::Value::Variable(_) => (),
-        query::Value::Int(_) => (),
-        query::Value::Float(_) => (),
-        query::Value::String(_) => (),
-        query::Value::Boolean(_) => (),
-        query::Value::Null => (),
-        query::Value::Enum(_) => (),
-        query::Value::List(list) => {
-            for value in list.iter_mut() {
-                normalize_value(value);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indoc::indoc;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn preserves_int_list_order() {
+        let query = "query ($o: [Int] = [10, 2, 1]) { me @x(list: [10, 2, 1]) { id } }";
+
+        let expected = indoc! {"
+            query($o: [Int] = [10, 2, 1]) {
+              me @x(list: [10, 2, 1]) {
+                id
+              }
             }
-            list.sort_by_key(|v| {
-                match v {
-                    Value::Variable(v) => v.clone(),
-                    Value::Int(i) => i.as_i64().unwrap_or(0).to_string(),
-                    Value::Float(f) => f.to_string(),
-                    Value::String(s) => s.clone(),
-                    Value::Boolean(_) => String::from("a"),
-                    Value::Null => String::from(""),
-                    Value::Enum(e) => e.to_string(),
-                    Value::List(_) => String::from("ZZZZ"),
-                    Value::Object(_) => String::from("ZZZZ"),
-                }
-                .to_lowercase()
-            })
-        }
-        query::Value::Object(object) => {
-            for (key, obj_val) in object.clone().iter() {
-                let mut new_value = obj_val.clone();
-                normalize_value(&mut new_value);
-                object.insert(key.clone(), new_value);
+        "};
+
+        assert_eq!(normalize(query).unwrap(), expected);
+    }
+
+    #[test]
+    fn preserves_enum_and_string_list_order() {
+        let query = indoc! {r#"
+            query ($sort: [Sort] = [NAME_DESC, AGE_ASC]) {
+              users(orderBy: [NAME_DESC, AGE_ASC], ids: ["b", "a", "c"]) @x(tags: ["z", "y"]) {
+                id
+              }
             }
-        }
+        "#};
+
+        let expected = indoc! {r#"
+            query($sort: [Sort] = [NAME_DESC, AGE_ASC]) {
+              users(ids: ["b", "a", "c"], orderBy: [NAME_DESC, AGE_ASC]) @x(tags: ["z", "y"]) {
+                id
+              }
+            }
+        "#};
+
+        assert_eq!(normalize(query).unwrap(), expected);
+    }
+
+    #[test]
+    fn sorts_keys_of_objects_inside_lists_without_reordering_the_list() {
+        let query = indoc! {"
+            query ($o: [Order] = [{field: NAME, dir: DESC}, {field: AGE, dir: ASC}]) {
+              users(orderBy: [{field: NAME, dir: DESC}, {field: AGE, dir: ASC}]) {
+                id
+              }
+            }
+        "};
+
+        let expected = indoc! {"
+            query($o: [Order] = [{dir: DESC, field: NAME}, {dir: ASC, field: AGE}]) {
+              users(orderBy: [{dir: DESC, field: NAME}, {dir: ASC, field: AGE}]) {
+                id
+              }
+            }
+        "};
+
+        assert_eq!(normalize(query).unwrap(), expected);
+    }
+
+    #[test]
+    fn normalizes_field_argument_values_like_directive_arguments() {
+        let query = indoc! {"
+            query {
+              users(where: {z: [3, 1, 2], a: {y: 1, b: [{d: 1, c: 2}]}}) @x(where: {z: [3, 1, 2], a: {y: 1, b: [{d: 1, c: 2}]}}) {
+                id
+              }
+            }
+        "};
+
+        let expected = indoc! {"
+            query {
+              users(where: {a: {b: [{c: 2, d: 1}], y: 1}, z: [3, 1, 2]}) @x(where: {a: {b: [{c: 2, d: 1}], y: 1}, z: [3, 1, 2]}) {
+                id
+              }
+            }
+        "};
+
+        assert_eq!(normalize(query).unwrap(), expected);
     }
 }

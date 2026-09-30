@@ -171,6 +171,8 @@ name = "graphql-normalize"
 version = "0.1.3"
 dependencies = [
  "graphql-parser",
+ "indoc",
+ "pretty_assertions",
 ]
 
 [[package]]

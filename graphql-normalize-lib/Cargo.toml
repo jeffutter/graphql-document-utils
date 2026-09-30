@@ -11,6 +11,16 @@ repository = "https://github.com/jeffutter/graphql-document-utils"
 [package.metadata.release]
 # Prefixed so library releases don't trip the CD workflow's `[v]?X.Y.Z` binary build.
 tag-name = "{{crate_name}}-v{{version}}"
+# Turn the changelog's Unreleased section into the release entry and open a new one.
+pre-release-replacements = [
+  { file = "CHANGELOG.md", search = "Unreleased", replace = "{{version}}", min = 1 },
+  { file = "CHANGELOG.md", search = "ReleaseDate", replace = "{{date}}", min = 1 },
+  { file = "CHANGELOG.md", search = "<!-- next-header -->", replace = "<!-- next-header -->\n\n## [Unreleased] - ReleaseDate", exactly = 1 },
+]
 
 [dependencies]
 graphql-parser = "0.4.1"
+
+[dev-dependencies]
+indoc = "2.0.6"
+pretty_assertions = "1.4.1"
