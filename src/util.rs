@@ -10,6 +10,9 @@ use graphql_parser::schema::{
 };
 use std::collections::{HashMap, HashSet};
 
+/// The scalars every schema has without defining them.
+pub const BUILT_IN_SCALARS: [&str; 5] = ["Boolean", "Float", "ID", "Int", "String"];
+
 pub fn schema_type_definition_name<'a, V, D: Text<'a, Value = V>>(
     td: &'a TypeDefinition<'a, D>,
 ) -> Option<&'a V> {
@@ -206,6 +209,10 @@ pub fn collect_value_variables(value: &Value<'_, String>, used: &mut HashSet<Str
 /// undefined. An extension of a different kind than the type it names (an
 /// `extend union` of an object type) is invalid and cannot be folded, so it is
 /// ignored.
+///
+/// A name defined more than once keeps its first definition, though commands
+/// never pass one: `Input::parse_schema` has already dropped the rest, with a
+/// warning.
 pub fn merged_type_definitions<'a>(
     schema: &Document<'a, String>,
 ) -> HashMap<String, TypeDefinition<'a, String>> {
@@ -822,7 +829,6 @@ impl References {
 /// command that emits a schema.
 #[cfg(test)]
 pub fn assert_self_contained(schema: &str) {
-    const BUILT_IN_TYPES: [&str; 5] = ["Boolean", "Float", "ID", "Int", "String"];
     const BUILT_IN_DIRECTIVES: [&str; 5] =
         ["deprecated", "include", "oneOf", "skip", "specifiedBy"];
 
@@ -830,7 +836,7 @@ pub fn assert_self_contained(schema: &str) {
         .unwrap_or_else(|err| panic!("output is not a parseable schema: {err}\n{schema}"));
 
     let mut refs = References::default();
-    let mut defined_types: HashSet<&str> = BUILT_IN_TYPES.into_iter().collect();
+    let mut defined_types: HashSet<&str> = BUILT_IN_SCALARS.into_iter().collect();
     let mut defined_directives: HashSet<&str> = BUILT_IN_DIRECTIVES.into_iter().collect();
     for def in &doc.definitions {
         match def {

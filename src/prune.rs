@@ -1,10 +1,7 @@
-use crate::util;
+use crate::{error::Error, input::Input, util, Output};
 use graphql_parser::{
-    query::{
-        parse_query, Definition as QueryDef, FragmentDefinition, Selection, SelectionSet,
-        TypeCondition,
-    },
-    schema::{parse_schema, Field, InterfaceType, ObjectType, TypeDefinition, UnionType},
+    query::{Definition as QueryDef, FragmentDefinition, Selection, SelectionSet, TypeCondition},
+    schema::{Field, InterfaceType, ObjectType, TypeDefinition, UnionType},
 };
 use std::collections::{HashMap, HashSet};
 
@@ -29,9 +26,31 @@ use std::collections::{HashMap, HashSet};
 /// The schema's query root type is always kept, since a schema without one is
 /// invalid. When the query never enters it, as in a document of only
 /// mutations, it keeps its smallest valid form too.
-pub fn process(schema: &str, query: &str) -> String {
-    let schema_doc = parse_schema::<String>(schema).expect("Failed to parse schema");
-    let query_doc = parse_query::<String>(query).expect("Failed to parse query");
+///
+/// A blank schema passes through as empty, as it does through every schema
+/// command. A blank query, as `query strip` emits once it has removed
+/// everything, uses nothing, so the output is empty too, and a note says why,
+/// since the schema given was not. That is not the smallest valid schema a
+/// query of only mutations gets: a blank query is no query at all, not one
+/// that happens to leave the query root unentered, and inventing a root field
+/// would hide that nothing reached the prune. Both documents are parsed before
+/// either is found blank, so a syntax error in the other is still reported.
+///
+/// A name either document defines more than once adds a warning to
+/// `warnings`, and only its first definition is kept (see
+/// `Input::parse_schema`/`parse_query`).
+pub fn process(schema: &Input, query: &Input, warnings: &mut Vec<String>) -> Result<Output, Error> {
+    let (schema_doc, query_doc) =
+        match (schema.parse_schema(warnings)?, query.parse_query(warnings)?) {
+            (Some(schema_doc), Some(query_doc)) => (schema_doc, query_doc),
+            (None, _) => return Ok(Output::default()),
+            (Some(_), None) => {
+                return Ok(Output {
+                    document: String::new(),
+                    notes: vec!["the query is empty; output is empty".to_string()],
+                })
+            }
+        };
 
     // Extensions are merged in, so fields and interfaces an extension adds are
     // seen as used like any other, and `retain_with_dependencies` trims each
@@ -144,7 +163,7 @@ pub fn process(schema: &str, query: &str) -> String {
             | TypeDefinition::InputObject(_) => td.clone(),
         });
 
-    format!("{pruned_doc}")
+    Ok(pruned_doc.to_string().into())
 }
 
 /// The types the query enters, plus every object implementing an interface it
@@ -430,7 +449,7 @@ fn collect_selection_directives(selection_set: &SelectionSet<String>, used: &mut
 
 #[cfg(test)]
 mod tests {
-    use crate::{prune, util};
+    use crate::{input::Input, prune, util};
     use graphql_parser::{
         parse_query, parse_schema,
         query::{Definition, FragmentDefinition, Selection, SelectionSet, TypeCondition},
@@ -445,7 +464,13 @@ mod tests {
     /// keeps, still defines everything the query uses, and keeps the query root
     /// type when the input schema has one.
     fn pruned(schema: &str, query: &str) -> String {
-        let result = prune::process(schema, query);
+        let result = prune::process(
+            &Input::inline(schema),
+            &Input::inline(query),
+            &mut Vec::new(),
+        )
+        .unwrap()
+        .document;
         util::assert_self_contained(&result);
         util::assert_no_empty_definitions(&result);
         assert_implementors_complete(&result);
@@ -653,6 +678,70 @@ mod tests {
                   name: String
                 }
             "}
+        );
+    }
+
+    fn pruned_output(schema: &str, query: &str) -> (String, Vec<String>) {
+        let output = prune::process(
+            &Input::inline(schema),
+            &Input::inline(query),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        (output.document, output.notes)
+    }
+
+    const USER_SCHEMA: &str = "type Query { user: User }\ntype User { id: ID }\n";
+
+    /// A blank query, as `query strip` leaves once it removes everything, uses
+    /// nothing, so the schema prunes to nothing, with a note saying why.
+    #[test]
+    fn prunes_to_nothing_with_a_blank_query() {
+        for query in ["", "\n", "# stripped\n"] {
+            assert_eq!(
+                pruned_output(USER_SCHEMA, query),
+                (
+                    String::new(),
+                    vec!["the query is empty; output is empty".to_string()]
+                ),
+                "{query:?}"
+            );
+        }
+    }
+
+    /// A blank schema passes through as empty, silently, as it does through
+    /// every schema command, whatever the query.
+    #[test]
+    fn passes_a_blank_schema_through() {
+        for query in ["{ user { id } }", ""] {
+            assert_eq!(
+                pruned_output("\n", query),
+                (String::new(), Vec::new()),
+                "{query:?}"
+            );
+        }
+    }
+
+    /// Blank or not, each document is parsed, so a syntax error in either is
+    /// reported whatever the other holds.
+    #[test]
+    fn reports_a_syntax_error_beside_a_blank_document() {
+        let error = |schema, query| {
+            prune::process(
+                &Input::inline(schema),
+                &Input::inline(query),
+                &mut Vec::new(),
+            )
+            .expect_err("expected the prune to fail")
+            .to_string()
+        };
+        assert_eq!(
+            error("", "{ user { id }"),
+            "failed to parse query (stdin) at 1:14: unexpected end of input; expected }"
+        );
+        assert_eq!(
+            error("type Query {", ""),
+            "failed to parse schema (stdin) at 1:13: unexpected end of input; expected Name"
         );
     }
 
@@ -1432,7 +1521,13 @@ mod tests {
         // subgraph, so the output extends a type it does not define, exactly as
         // the input does. That is why this skips `pruned` and its check for
         // self-containment, and runs the rest of its checks directly.
-        let result = prune::process(schema, query);
+        let result = prune::process(
+            &Input::inline(schema),
+            &Input::inline(query),
+            &mut Vec::new(),
+        )
+        .unwrap()
+        .document;
         util::assert_no_empty_definitions(&result);
         assert_implementors_complete(&result);
         assert_supports_query(&result, query);

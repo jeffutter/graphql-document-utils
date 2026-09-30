@@ -430,12 +430,17 @@ Fields, arguments, enum values, and union members keep their source order.
 
 ### Input/Output Options
 
-Every `query` subcommand reads its query from stdin when the query argument is
-omitted, and always writes to stdout, so they compose as filters:
+Every command reads the document it is named for from stdin when that
+document's flag is omitted: `query` subcommands read the query
+(`-q`/`--query`), and `schema` subcommands read the schema (`-s`/`--schema`).
+Output always goes to stdout, so the commands compose as filters:
 
 ```bash
 # Read the query from stdin
 cat query.graphql | graphql-document-utils query focus --schema schema.graphql Profile
+
+# Read the schema from stdin
+cat schema.graphql | graphql-document-utils schema sort
 
 # Chain them together
 cat query.graphql \
@@ -444,12 +449,46 @@ cat query.graphql \
   | graphql-document-utils query normalize --minify
 ```
 
-`-q`/`--query` still takes a file, and `-` names stdin explicitly. Only the query
-comes from stdin; `--schema` is always a file, since one stream cannot serve both.
+Each flag still takes a file, and `-` names stdin explicitly. Stdin holds one
+document, so a command that needs two takes the other as a file: `query focus`
+and `query strip` always take `--schema` as a file, and `schema prune` always
+needs `--query`. `schema prune --query -` reads the query from stdin instead,
+which needs `--schema FILE`, since the schema would otherwise read stdin too:
 
-An empty document passes straight through. `focus` and `strip` produce one when
-nothing survives, so a pipeline that strips everything ends quietly instead of
-failing to parse downstream.
+```bash
+cat query.graphql | graphql-document-utils schema prune --schema schema.graphql --query -
+```
+
+With nothing piped in, a command that would read stdin fails with a usage error
+(exit 2) instead of waiting on the terminal.
+
+Stdout is only ever a GraphQL document, ending in exactly one newline, or
+nothing at all when nothing survives, so an empty result redirected to a file
+leaves it zero bytes (`[ -s out.graphql ]` fails). Errors, warnings, and notes such as a target that matched
+nothing, go to stderr. The exit code is 0 on success, including a valid target
+that matches nothing; 1 for a bad input (unreadable, invalid, or an unknown
+target); 2 for a usage error.
+
+An empty document (nothing but whitespace, commas, and comments) passes
+straight through every command as an empty document. `focus` and `strip`
+produce one when nothing survives, so a pipeline that strips everything ends
+quietly instead of failing to parse downstream. `schema prune` given an empty
+query prints an empty schema and says so on stderr. The one exception is the
+`--schema` of `query focus` and `query strip`: the query is resolved against
+it, so an empty one is an error (exit 1).
+
+A name defined more than once (a type, directive, `schema` block, fragment, or
+named operation) is invalid GraphQL, but not an error here. `focus`, `strip`,
+and `prune` use the first definition, leave the rest out of their output, and
+print a warning naming the document and where each definition starts:
+
+```
+warning: type `User` is defined more than once in 'schema.graphql' (at 3:1, 7:1); only the first is used
+```
+
+`extend` blocks are not repeats. `schema format`, `schema sort`, and
+`query normalize` only lay a document out, so they keep every definition as
+written and say nothing.
 
 ## Development
 
@@ -557,15 +596,13 @@ cargo clippy                   # Run linter
 ### Complete Workflow Example
 
 ```bash
-# 1. Start with a large schema and the queries your app sends
-# 2. Prune the types and fields those queries do not use
-graphql-document-utils schema prune --schema large-schema.graphql --query app-queries.graphql > pruned-schema.graphql
-
-# 3. Focus on the types you care about, along with everything they depend on
-graphql-document-utils schema focus --schema pruned-schema.graphql User Product > focused-schema.graphql
-
-# 4. Sort the final schema (sort output is already formatted, so no `schema format` step is needed)
-graphql-document-utils schema sort --schema focused-schema.graphql > final-schema.graphql
+# Start with a large schema and the queries your app sends, then:
+# 1. Prune the types and fields those queries do not use
+# 2. Focus on the types you care about, along with everything they depend on
+# 3. Sort the result (sort output is already formatted, so no `schema format` step is needed)
+graphql-document-utils schema prune --schema large-schema.graphql --query app-queries.graphql \
+  | graphql-document-utils schema focus User Product \
+  | graphql-document-utils schema sort > final-schema.graphql
 ```
 
 Prune before focus: focusing on `User Product` first drops `Query`, leaving prune

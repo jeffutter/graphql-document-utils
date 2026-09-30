@@ -1,33 +1,102 @@
-use crate::{query_target::Matcher, util};
-use graphql_parser::{
-    query::{
-        parse_query, Definition as QueryDef, Document as QueryDoc, Field as QueryField,
-        FragmentDefinition, InlineFragment, Selection, SelectionSet, TypeCondition,
-    },
-    schema::parse_schema,
+use crate::{
+    error::Error,
+    input::Input,
+    query_target::{self, Matcher},
+    util, Output,
+};
+use graphql_parser::query::{
+    Definition as QueryDef, Document as QueryDoc, Field as QueryField, FragmentDefinition,
+    InlineFragment, Selection, SelectionSet, TypeCondition,
 };
 use std::collections::{HashMap, HashSet};
 
 /// Strips a query down to just the selections needed to reach `targets`.
 ///
 /// Each target is either a type name (`MyType`) or a field on a type
-/// (`MyType.field`). Every path from an operation root down to a matching
+/// (`MyType.field`), and each must be one the schema knows; the first that is
+/// not fails the command. Every path from an operation root down to a matching
 /// selection is retained, along with the full sub-selection at the match, so the
 /// result is a valid query rooted at the same entrypoints as the original.
 /// Operations, fragments and variable definitions that no longer contribute
 /// anything are dropped; if nothing matches, the result is empty.
-pub fn process(schema: &str, query: &str, targets: &[&str]) -> String {
+///
+/// A target that reaches nothing gets a note: an input object type, which no
+/// selection can return, gets one saying so, and the rest are listed together.
+///
+/// `read_query` is called only once every target has checked out, since it may
+/// block on stdin: a query file passed as a target instead of with `-q` fails
+/// here rather than leaving the command waiting for input that never comes.
+///
+/// A name either document defines more than once adds a warning to
+/// `warnings`, and only its first definition is kept (see
+/// `Input::parse_schema`/`parse_query`).
+pub fn process(
+    schema: &Input,
+    targets: &[&str],
+    read_query: impl FnOnce() -> Result<Input, Error>,
+    warnings: &mut Vec<String>,
+) -> Result<Output, Error> {
+    let schema_doc = query_target::parse_schema(schema, warnings)?;
+    let matcher = Matcher::new(&schema_doc, schema.origin(), targets)?;
+    let query = read_query()?;
+
     // An empty document is what this command emits when nothing matches, so it
     // has to survive being piped back in rather than failing to parse.
-    if query.trim().is_empty() {
-        return String::new();
+    let Some(query_doc) = query.parse_query(warnings)? else {
+        return Ok(Output::default());
+    };
+    let root_types = util::detect_root_types(&schema_doc);
+    let document = focus_document(matcher.clone(), &root_types, &query_doc);
+
+    // With several targets and some output, each target is tried alone: one
+    // may be reached only inside another's match, which the walk above keeps
+    // whole without looking into.
+    let unreached: Vec<&str> = if document.is_empty() {
+        matcher.targets().collect()
+    } else if targets.len() > 1 {
+        matcher
+            .targets()
+            .filter(|target| {
+                focus_document(matcher.only(Some(target)), &root_types, &query_doc).is_empty()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let (inputs, unreached): (Vec<&str>, Vec<&str>) = unreached
+        .into_iter()
+        .partition(|target| matcher.input_fields(target).is_some());
+
+    let mut notes: Vec<String> = inputs
+        .iter()
+        .map(|target| {
+            format!("`{target}` is an input type; `query focus` only matches output selections")
+        })
+        .collect();
+    if !unreached.is_empty() {
+        let empty = if document.is_empty() {
+            "; output is empty"
+        } else {
+            ""
+        };
+        notes.push(format!(
+            "no selection reaches {}{empty}",
+            query_target::quoted_list(&unreached)
+        ));
     }
 
-    let schema_doc = parse_schema::<String>(schema).expect("Failed to parse schema");
-    let query_doc = parse_query::<String>(query).expect("Failed to parse query");
+    Ok(Output { document, notes })
+}
 
+/// Focuses a parsed query on `matcher`'s targets, returning the printed
+/// document, or an empty string when nothing is reached.
+fn focus_document<'q>(
+    matcher: Matcher<'_, '_>,
+    root_types: &util::RootTypes,
+    query_doc: &'q QueryDoc<'q, String>,
+) -> String {
     let focus = Focus {
-        matcher: Matcher::new(&schema_doc, targets),
+        matcher,
         fragments: query_doc
             .definitions
             .iter()
@@ -38,7 +107,6 @@ pub fn process(schema: &str, query: &str, targets: &[&str]) -> String {
             .collect(),
     };
 
-    let root_types = util::detect_root_types(&schema_doc);
     let mut walk = Walk::default();
 
     // Prune every operation first: a fragment may be reached from several
@@ -47,7 +115,7 @@ pub fn process(schema: &str, query: &str, targets: &[&str]) -> String {
     let mut pruned_ops: HashMap<usize, SelectionSet<String>> = HashMap::new();
     for (i, def) in query_doc.definitions.iter().enumerate() {
         if let QueryDef::Operation(op) = def {
-            let (root_type, selection_set) = util::operation_root(&root_types, op);
+            let (root_type, selection_set) = util::operation_root(root_types, op);
             if let Some(pruned) = focus.focus_selection_set(root_type, selection_set, &mut walk) {
                 pruned_ops.insert(i, pruned);
             }
@@ -328,9 +396,20 @@ impl<'s, 'q> Focus<'s, 'q, '_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::query_focus;
+    use crate::{input::Input, query_focus};
     use indoc::indoc;
     use pretty_assertions::assert_eq;
+
+    fn focused(schema: &str, query: &str, targets: &[&str]) -> String {
+        query_focus::process(
+            &Input::inline(schema),
+            targets,
+            || Ok(Input::inline(query)),
+            &mut Vec::new(),
+        )
+        .unwrap()
+        .document
+    }
 
     const SCHEMA: &str = indoc! {"
         schema {
@@ -389,7 +468,7 @@ mod tests {
             }
         "};
 
-        let result = query_focus::process(SCHEMA, query, &["Profile"]);
+        let result = focused(SCHEMA, query, &["Profile"]);
 
         assert_eq!(
             result,
@@ -422,7 +501,7 @@ mod tests {
             }
         "};
 
-        let result = query_focus::process(SCHEMA, query, &["User.name"]);
+        let result = focused(SCHEMA, query, &["User.name"]);
 
         assert_eq!(
             result,
@@ -454,7 +533,7 @@ mod tests {
             }
         "};
 
-        let result = query_focus::process(SCHEMA, query, &["User.name"]);
+        let result = focused(SCHEMA, query, &["User.name"]);
 
         assert_eq!(
             result,
@@ -490,7 +569,7 @@ mod tests {
             }
         "};
 
-        let result = query_focus::process(SCHEMA, query, &["Node.id"]);
+        let result = focused(SCHEMA, query, &["Node.id"]);
 
         assert_eq!(
             result,
@@ -523,7 +602,7 @@ mod tests {
             }
         "};
 
-        let result = query_focus::process(SCHEMA, query, &["User"]);
+        let result = focused(SCHEMA, query, &["User"]);
 
         assert_eq!(
             result,
@@ -568,7 +647,7 @@ mod tests {
             }
         "};
 
-        let result = query_focus::process(SCHEMA, query, &["Profile"]);
+        let result = focused(SCHEMA, query, &["Profile"]);
 
         assert_eq!(
             result,
@@ -612,7 +691,7 @@ mod tests {
             }
         "};
 
-        let result = query_focus::process(SCHEMA, query, &["User.profile"]);
+        let result = focused(SCHEMA, query, &["User.profile"]);
 
         assert_eq!(
             result,
@@ -654,7 +733,7 @@ mod tests {
             }
         "};
 
-        let result = query_focus::process(SCHEMA, query, &["User.name"]);
+        let result = focused(SCHEMA, query, &["User.name"]);
 
         assert_eq!(
             result,
@@ -688,7 +767,7 @@ mod tests {
             }
         "};
 
-        let result = query_focus::process(SCHEMA, query, &["Profile"]);
+        let result = focused(SCHEMA, query, &["Profile"]);
 
         assert_eq!(
             result,
@@ -704,8 +783,33 @@ mod tests {
         );
     }
 
+    /// The notes a focus writes to stderr, checking that it produced
+    /// `document`.
+    fn notes(schema: &str, query: &str, targets: &[&str], document: &str) -> Vec<String> {
+        let output = query_focus::process(
+            &Input::inline(schema),
+            targets,
+            || Ok(Input::inline(query)),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(output.document, document);
+        output.notes
+    }
+
+    fn focus_error(schema: &str, query: &str, targets: &[&str]) -> String {
+        query_focus::process(
+            &Input::inline(schema),
+            targets,
+            || Ok(Input::inline(query)),
+            &mut Vec::new(),
+        )
+        .expect_err("expected the focus to fail")
+        .to_string()
+    }
+
     #[test]
-    fn returns_empty_when_nothing_matches() {
+    fn notes_a_valid_target_that_nothing_reaches() {
         let query = indoc! {"
             query Q {
               user {
@@ -714,16 +818,146 @@ mod tests {
             }
         "};
 
-        assert_eq!(query_focus::process(SCHEMA, query, &["NoSuchType"]), "");
-        assert_eq!(query_focus::process(SCHEMA, query, &["User.missing"]), "");
+        assert_eq!(
+            notes(SCHEMA, query, &["Avatar"], ""),
+            ["no selection reaches `Avatar`; output is empty"]
+        );
+        assert_eq!(
+            notes(SCHEMA, query, &["Company.name", "Avatar"], ""),
+            ["no selection reaches `Company.name` or `Avatar`; output is empty"]
+        );
+    }
+
+    #[test]
+    fn notes_only_the_targets_that_reach_nothing() {
+        let query = indoc! {"
+            query Q {
+              user {
+                name
+              }
+            }
+        "};
+
+        assert_eq!(
+            notes(SCHEMA, query, &["User.name", "Avatar", "Company"], query),
+            ["no selection reaches `Avatar` or `Company`"]
+        );
+    }
+
+    /// `Profile` is only reached inside the `User` match, which the walk keeps
+    /// whole without looking into, but it is reached all the same.
+    #[test]
+    fn does_not_note_a_target_reached_only_inside_another_match() {
+        let query = indoc! {"
+            query Q {
+              user {
+                profile {
+                  email
+                }
+              }
+            }
+        "};
+
+        assert!(notes(SCHEMA, query, &["User", "Profile"], query).is_empty());
+    }
+
+    #[test]
+    fn notes_an_input_type_target() {
+        let schema = indoc! {"
+            type Query {
+              search(filter: SearchFilter): [String]
+            }
+
+            input SearchFilter {
+              term: String
+            }
+        "};
+        let query = indoc! {"
+            query Q($filter: SearchFilter) {
+              search(filter: $filter)
+            }
+        "};
+
+        assert_eq!(
+            notes(schema, query, &["SearchFilter"], ""),
+            ["`SearchFilter` is an input type; `query focus` only matches output selections"]
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_targets() {
+        let query = "{ user { name } }";
+
+        assert_eq!(
+            focus_error(SCHEMA, query, &["Usr"]),
+            "unknown type `Usr` in (stdin); did you mean `User`?"
+        );
+        assert_eq!(
+            focus_error(SCHEMA, query, &["user"]),
+            "unknown type `user` in (stdin); did you mean `User`?"
+        );
+        assert_eq!(
+            focus_error(SCHEMA, query, &["User", "User.nmae"]),
+            "`User` has no field `nmae`; did you mean `name`?"
+        );
     }
 
     /// The empty document this command emits when nothing matches has to survive
-    /// being piped back in.
+    /// being piped back in, silently, since whatever emitted it said why.
     #[test]
     fn passes_an_empty_document_through() {
-        assert_eq!(query_focus::process(SCHEMA, "", &["User"]), "");
-        assert_eq!(query_focus::process(SCHEMA, "\n", &["User"]), "");
+        assert!(notes(SCHEMA, "", &["User"], "").is_empty());
+        assert!(notes(SCHEMA, "\n", &["User"], "").is_empty());
+    }
+
+    /// The schema is what the query is resolved against, not what is being
+    /// transformed, so a blank one fails rather than passing through, whether
+    /// or not the query is blank, and before any target is checked against it.
+    #[test]
+    fn rejects_a_blank_schema() {
+        let expected =
+            "schema (stdin) is empty; pass the schema the query is written against with -s";
+        for (query, targets) in [
+            ("{ user { name } }", &["User"][..]),
+            ("", &["User"][..]),
+            // A built-in scalar is a target any schema knows, even a blank one.
+            ("{ user { name } }", &["String"][..]),
+            ("{ user { name } }", &["query.graphql"][..]),
+        ] {
+            for schema in ["", "\n# no definitions\n"] {
+                assert_eq!(
+                    focus_error(schema, query, targets),
+                    expected,
+                    "{query:?} {targets:?}"
+                );
+            }
+        }
+    }
+
+    /// Targets are checked against the schema alone, before the query is read,
+    /// since reading it may block on stdin. A query file passed as a target
+    /// must fail rather than hang.
+    #[test]
+    fn rejects_bad_targets_without_reading_the_query() {
+        for (targets, expected) in [
+            (
+                &["Usr"][..],
+                "unknown type `Usr` in (stdin); did you mean `User`?",
+            ),
+            (
+                &["query.graphql", "User"][..],
+                "unknown target 'query.graphql'; pass query files with -q: -q query.graphql",
+            ),
+        ] {
+            let error = query_focus::process(
+                &Input::inline(SCHEMA),
+                targets,
+                || panic!("read the query before checking {targets:?}"),
+                &mut Vec::new(),
+            )
+            .expect_err("expected the focus to fail");
+            assert_eq!(error.to_string(), expected);
+        }
     }
 
     const INTERFACE_SCHEMA: &str = indoc! {"
@@ -773,7 +1007,7 @@ mod tests {
             }
         "};
 
-        let result = query_focus::process(INTERFACE_SCHEMA, query, &["A"]);
+        let result = focused(INTERFACE_SCHEMA, query, &["A"]);
 
         assert_eq!(
             result,
@@ -822,7 +1056,7 @@ mod tests {
             }
         "};
 
-        let result = query_focus::process(INTERFACE_SCHEMA, query, &["A"]);
+        let result = focused(INTERFACE_SCHEMA, query, &["A"]);
 
         assert_eq!(
             result,
@@ -876,7 +1110,7 @@ mod tests {
             }
         "};
 
-        let result = query_focus::process(INTERFACE_SCHEMA, query, &["A"]);
+        let result = focused(INTERFACE_SCHEMA, query, &["A"]);
 
         assert_eq!(
             result,
@@ -916,7 +1150,7 @@ mod tests {
             }
         "};
 
-        let result = query_focus::process(SCHEMA, query, &["Profile", "Company.name"]);
+        let result = focused(SCHEMA, query, &["Profile", "Company.name"]);
 
         assert_eq!(
             result,
@@ -974,7 +1208,7 @@ mod tests {
         "};
 
         // `bots` exists only in an extension.
-        let result = query_focus::process(schema, query, &["Bot"]);
+        let result = focused(schema, query, &["Bot"]);
         assert_eq!(
             result,
             indoc! {"
@@ -987,7 +1221,7 @@ mod tests {
         );
 
         // `Bot` implements `Owned` only through an extension.
-        let result = query_focus::process(schema, query, &["Owned"]);
+        let result = focused(schema, query, &["Owned"]);
         assert_eq!(
             result,
             indoc! {"

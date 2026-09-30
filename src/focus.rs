@@ -1,12 +1,52 @@
-use crate::util;
-use graphql_parser::parse_schema;
+use crate::{
+    error::Error,
+    input::{Input, Kind},
+    query_target, util,
+};
 use graphql_parser::schema::TypeDefinition;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::Walker;
 use std::collections::{HashMap, HashSet};
 
-pub fn process(schema: &str, types: &[&str]) -> String {
-    let schema_ast = parse_schema::<String>(schema).expect("Invalid schema");
+/// Reduces the schema `read_schema` returns to `types` and their descendants.
+///
+/// Roots are checked in two passes. The first needs no schema, so it runs
+/// before `read_schema`, which may block on stdin: a schema file passed
+/// positionally, the likeliest mistake, fails at once instead of waiting on a
+/// terminal or an idle pipe. Whether a root names a type needs the schema, so
+/// that check comes after the read, and is skipped for a blank schema, which
+/// yields an empty document.
+///
+/// A name the schema defines more than once adds a warning to `warnings`, and
+/// only its first definition is kept (see `Input::parse_schema`).
+pub fn process(
+    types: &[&str],
+    read_schema: impl FnOnce() -> Result<Input, Error>,
+    warnings: &mut Vec<String>,
+) -> Result<String, Error> {
+    // A path is never a type name, so it is caught first, before its `.`
+    // reads as `Type.field`.
+    for &name in types {
+        if query_target::looks_like_path(name) {
+            return Err(Error::PathAsTarget {
+                target: name.to_string(),
+                kind: Kind::Schema,
+            });
+        }
+        if name.contains('.') {
+            return Err(Error::FieldInSchemaFocus {
+                target: name.to_string(),
+            });
+        }
+    }
+
+    // A blank schema passes through as empty, as it does through every schema
+    // command. There is then nothing to look a root up in, so only its form,
+    // checked above, is checked at all.
+    let schema = read_schema()?;
+    let Some(schema_ast) = schema.parse_schema(warnings)? else {
+        return Ok(String::new());
+    };
 
     let mut g: petgraph::Graph<&String, ()> = petgraph::Graph::new();
     let mut type_node_map: HashMap<&String, NodeIndex> = HashMap::new();
@@ -15,6 +55,26 @@ pub fn process(schema: &str, types: &[&str]) -> String {
     // clauses they add are walked like any other, and a type defined only by
     // an extension can be a root.
     let merged = util::merged_type_definitions(&schema_ast);
+
+    // Every root must be a type the schema defines, so a typo fails instead of
+    // quietly focusing on nothing. A built-in scalar is a type, but one with no
+    // definition here to keep.
+    for &name in types {
+        if merged.contains_key(name) {
+            continue;
+        }
+        if util::BUILT_IN_SCALARS.contains(&name) {
+            return Err(Error::BuiltInScalar {
+                name: name.to_string(),
+                origin: schema.origin().clone(),
+            });
+        }
+        return Err(query_target::unknown_type(
+            name,
+            schema.origin(),
+            merged.keys().map(String::as_str),
+        ));
+    }
 
     // Every type the schema defines is a node, whether or not anything names
     // it or it names anything, so any of them can be a root. Names it only
@@ -90,19 +150,19 @@ pub fn process(schema: &str, types: &[&str]) -> String {
 
     let focused = util::retain_with_dependencies(&schema_ast, &descendants, &[], |td| td.clone());
 
-    format!("{focused}")
+    Ok(format!("{focused}"))
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{focus, util};
+    use crate::{focus, input::Input, util};
     use indoc::indoc;
     use pretty_assertions::assert_eq;
 
     /// Focuses and checks that the output names only types and directives it
     /// defines.
     fn focused(schema: &str, types: &[&str]) -> String {
-        let result = focus::process(schema, types);
+        let result = focus::process(types, || Ok(Input::inline(schema)), &mut Vec::new()).unwrap();
         util::assert_self_contained(&result);
         result
     }
@@ -314,8 +374,139 @@ mod tests {
         assert_eq!(result.trim(), expected_schema.trim());
     }
 
+    fn focus_error(schema: &str, types: &[&str]) -> String {
+        focus::process(types, || Ok(Input::inline(schema)), &mut Vec::new())
+            .expect_err("expected the focus to fail")
+            .to_string()
+    }
+
+    const USER_SCHEMA: &str = indoc! {"
+        type Query {
+          user: User
+        }
+
+        type User {
+          id: ID
+          name: String
+        }
+    "};
+
     #[test]
-    fn test_focus_query_missing_operation() {
+    fn rejects_an_unknown_type_with_a_suggestion() {
+        assert_eq!(
+            focus_error(USER_SCHEMA, &["Usr"]),
+            "unknown type `Usr` in (stdin); did you mean `User`?"
+        );
+        assert_eq!(
+            focus_error(USER_SCHEMA, &["nonExistent"]),
+            "unknown type `nonExistent` in (stdin)"
+        );
+    }
+
+    #[test]
+    fn suggests_the_right_case() {
+        assert_eq!(
+            focus_error(USER_SCHEMA, &["User", "user"]),
+            "unknown type `user` in (stdin); did you mean `User`?"
+        );
+    }
+
+    #[test]
+    fn rejects_field_targets() {
+        assert_eq!(
+            focus_error(USER_SCHEMA, &["Query.user"]),
+            "`schema focus` takes type names; for fields use `query focus` (got `Query.user`)"
+        );
+    }
+
+    /// A second schema file passed positionally would otherwise read as
+    /// `Type.field` and be told to use `query focus`.
+    #[test]
+    fn rejects_a_path_with_a_hint_to_pass_it_with_its_flag() {
+        for target in ["other.graphql", "User.gql", "schemas/user"] {
+            assert_eq!(
+                focus_error(USER_SCHEMA, &["User", target]),
+                format!("unknown target '{target}'; pass the schema file with -s: -s {target}")
+            );
+        }
+    }
+
+    /// Checking a root's form needs no schema, so it happens before the
+    /// schema is read, since reading it may block on stdin.
+    #[test]
+    fn rejects_malformed_roots_without_reading_the_schema() {
+        for (types, expected) in [
+            (
+                &["User", "schema.graphql"][..],
+                "unknown target 'schema.graphql'; pass the schema file with -s: -s schema.graphql",
+            ),
+            (
+                &["Query.user"][..],
+                "`schema focus` takes type names; for fields use `query focus` (got `Query.user`)",
+            ),
+        ] {
+            let error = focus::process(
+                types,
+                || panic!("read the schema before checking {types:?}"),
+                &mut Vec::new(),
+            )
+            .expect_err("expected the focus to fail");
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    /// A blank schema passes through as empty. With nothing to look a root up
+    /// in, a root is only checked for its form.
+    #[test]
+    fn passes_a_blank_schema_through() {
+        for schema in ["", "\n", "# no definitions\n"] {
+            let result =
+                focus::process(&["Usr"], || Ok(Input::inline(schema)), &mut Vec::new()).unwrap();
+            assert_eq!(result, "", "{schema:?}");
+            assert_eq!(
+                focus_error(schema, &["Query.user"]),
+                "`schema focus` takes type names; for fields use `query focus` (got `Query.user`)"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_a_built_in_scalar_the_schema_does_not_define() {
+        assert_eq!(
+            focus_error(USER_SCHEMA, &["String"]),
+            "`String` is a built-in scalar, which (stdin) does not define; `schema focus` takes types the schema defines"
+        );
+    }
+
+    #[test]
+    fn accepts_a_type_defined_only_by_an_extension() {
+        let schema = indoc! {"
+            type Query {
+              user: User
+            }
+
+            extend type User {
+              id: ID
+            }
+        "};
+
+        // The output extends a type it does not define, exactly as the input
+        // does, so it is not checked for self-containment.
+        let result =
+            focus::process(&["User"], || Ok(Input::inline(schema)), &mut Vec::new()).unwrap();
+        let expected_schema = indoc! {"
+            extend type User {
+              id: ID
+            }
+        "};
+        assert_eq!(result.trim(), expected_schema.trim());
+    }
+
+    #[test]
+    fn uses_only_the_first_definition_of_a_repeated_type() {
+        // The second `User` is dropped, so `Avatar`, which only it names, is
+        // not a descendant, and it is not printed again beside the first.
+        // Extensions still fold into the first.
         let schema = indoc! {"
             type Query {
               user: User
@@ -323,14 +514,46 @@ mod tests {
 
             type User {
               id: ID
+            }
+
+            type User {
+              avatar: Avatar
+            }
+
+            type Avatar {
+              url: String
+            }
+
+            extend type User {
               name: String
             }
         "};
 
-        // An empty document is not a parseable schema, so it cannot be checked
-        // for self-containment.
-        let result = focus::process(schema, &["nonExistent"]);
-        assert_eq!(result.trim(), "");
+        let mut warnings = Vec::new();
+        let result =
+            focus::process(&["Query"], || Ok(Input::inline(schema)), &mut warnings).unwrap();
+        util::assert_self_contained(&result);
+
+        assert_eq!(
+            result,
+            indoc! {"
+                type Query {
+                  user: User
+                }
+
+                type User {
+                  id: ID
+                }
+
+                extend type User {
+                  name: String
+                }
+            "}
+        );
+        assert_eq!(
+            warnings,
+            ["type `User` is defined more than once in (stdin) (at 5:1, 9:1); only the first is used"]
+        );
     }
 
     #[test]
@@ -849,7 +1072,8 @@ mod tests {
         // The base `Query` lives in another document, as in a federation
         // subgraph, so the output extends a type it does not define, exactly as
         // the input does. That is why this is not checked for self-containment.
-        let result = focus::process(schema, &["Query"]);
+        let result =
+            focus::process(&["Query"], || Ok(Input::inline(schema)), &mut Vec::new()).unwrap();
         let expected_schema = indoc! {"
             extend type Query {
               me: User

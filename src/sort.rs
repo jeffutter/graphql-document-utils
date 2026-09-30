@@ -1,9 +1,12 @@
-use crate::util;
-use graphql_parser::parse_schema;
+use crate::{error::Error, input::Input, util};
 use graphql_parser::schema::{Definition, Document};
 
-pub fn process(schema: &str) -> String {
-    let schema_ast = parse_schema::<String>(schema).expect("Invalid schema");
+pub fn process(schema: &Input) -> Result<String, Error> {
+    // A blank schema has nothing to sort, so it passes through as empty.
+    // Sorting only lays definitions out, so a name defined twice keeps both.
+    let Some(schema_ast) = schema.parse_schema_as_written()? else {
+        return Ok(String::new());
+    };
 
     // Create a vector of indices paired with sort keys
     let mut indices_with_keys: Vec<(usize, (u8, String))> = schema_ast
@@ -46,14 +49,18 @@ pub fn process(schema: &str) -> String {
         definitions: sorted_definitions,
     };
 
-    format!("{sorted_doc}")
+    Ok(format!("{sorted_doc}"))
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{sort, util};
+    use crate::{input::Input, sort, util};
     use indoc::indoc;
     use pretty_assertions::assert_eq;
+
+    fn sorted(schema: &str) -> String {
+        sort::process(&Input::inline(schema)).unwrap()
+    }
 
     #[test]
     fn test_sort_basic_types() {
@@ -73,7 +80,7 @@ mod tests {
             }
         "};
 
-        let result = sort::process(schema);
+        let result = sorted(schema);
         let expected_schema = indoc! {"
             type Company {
               id: ID!
@@ -124,7 +131,7 @@ mod tests {
             }
         "};
 
-        let result = sort::process(schema);
+        let result = sorted(schema);
         let expected_schema = indoc! {"
             type Company {
               id: ID!
@@ -179,7 +186,7 @@ mod tests {
             }
         "};
 
-        let result = sort::process(schema);
+        let result = sorted(schema);
         let expected_schema = indoc! {"
             schema {
               query: Query
@@ -220,7 +227,7 @@ mod tests {
             }
         "};
 
-        let result = sort::process(schema);
+        let result = sorted(schema);
         let expected_schema = indoc! {"
             directive @auth(role: String!) on FIELD_DEFINITION
 
@@ -260,7 +267,7 @@ mod tests {
             }
         "};
 
-        let result = sort::process(schema);
+        let result = sorted(schema);
         let expected_schema = indoc! {"
             input CreateUserInput {
               user: UserInput!
@@ -311,7 +318,7 @@ mod tests {
             }
         "};
 
-        let result = sort::process(schema);
+        let result = sorted(schema);
         let expected_schema = indoc! {"
             type A {
               id: ID
@@ -374,7 +381,7 @@ mod tests {
             }
         "};
 
-        let result = sort::process(schema);
+        let result = sorted(schema);
         let expected_schema = indoc! {"
             type Query {
               id: ID
@@ -464,7 +471,7 @@ mod tests {
             directive @tag on SCALAR
         "};
 
-        let result = sort::process(schema);
+        let result = sorted(schema);
         let expected_schema = indoc! {"
             directive @tag on SCALAR
 
@@ -524,12 +531,9 @@ mod tests {
 
     #[test]
     fn test_sort_empty_schema() {
-        // GraphQL parser doesn't accept completely empty schemas
-        // Use a minimal valid schema instead
-        let schema = "type Query { id: ID }";
-        let result = sort::process(schema);
-        let expected = "type Query {\n  id: ID\n}";
-        assert_eq!(result.trim(), expected.trim());
+        // A blank schema has nothing to sort, so it passes through as empty.
+        assert_eq!(sorted(""), "");
+        assert_eq!(sorted("\n# only a comment\n"), "");
     }
 
     #[test]
@@ -541,7 +545,7 @@ mod tests {
             }
         "};
 
-        let result = sort::process(schema);
+        let result = sorted(schema);
         let expected_schema = indoc! {"
             type User {
               id: ID!

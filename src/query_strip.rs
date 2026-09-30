@@ -1,11 +1,16 @@
-use crate::{query_target::Matcher, util};
+use crate::{
+    error::Error,
+    input::Input,
+    query_target::{self, Matcher},
+    util, Output,
+};
 use graphql_parser::{
     query::{
-        parse_query, Definition as QueryDef, Directive, Document as QueryDoc, Field as QueryField,
+        Definition as QueryDef, Directive, Document as QueryDoc, Field as QueryField,
         FragmentDefinition, FragmentSpread, InlineFragment, Selection, SelectionSet, TypeCondition,
         Value, VariableDefinition,
     },
-    schema::{parse_schema, InputValue, Type},
+    schema::{InputValue, Type},
 };
 use std::collections::{HashMap, HashSet};
 
@@ -41,18 +46,79 @@ use std::collections::{HashMap, HashSet};
 /// against the targets, since nothing says what it returns. Its arguments,
 /// directives, and sub-selection are still cleaned of removed variables and of
 /// fragments that did not survive, so no dangling reference is left behind.
-pub fn process(schema: &str, query: &str, targets: &[&str]) -> String {
+///
+/// Each target must be one the schema knows; the first that is not fails the
+/// command. A target that matches nothing gets a note, as the output would
+/// otherwise look like a successful strip.
+///
+/// `read_query` is called only once every target has checked out, since it may
+/// block on stdin: a query file passed as a target instead of with `-q` fails
+/// here rather than leaving the command waiting for input that never comes.
+///
+/// A name either document defines more than once adds a warning to
+/// `warnings`, and only its first definition is kept (see
+/// `Input::parse_schema`/`parse_query`).
+pub fn process(
+    schema: &Input,
+    targets: &[&str],
+    read_query: impl FnOnce() -> Result<Input, Error>,
+    warnings: &mut Vec<String>,
+) -> Result<Output, Error> {
+    let schema_doc = query_target::parse_schema(schema, warnings)?;
+    let matcher = Matcher::new(&schema_doc, schema.origin(), targets)?;
+    let query = read_query()?;
+
     // An empty document is what this command emits when everything is stripped,
     // so it has to survive being piped back in rather than failing to parse.
-    if query.trim().is_empty() {
-        return String::new();
+    let Some(query_doc) = query.parse_query(warnings)? else {
+        return Ok(Output::default());
+    };
+    let root_types = util::detect_root_types(&schema_doc);
+    let document = strip_document(matcher.clone(), &root_types, &query_doc);
+
+    // A target matched nothing when stripping it changes nothing, measured
+    // against a strip with no targets, since even that drops unused fragments
+    // and reprints the rest. With several targets each is tried alone: one may
+    // match only inside another's match, which the walk above removes without
+    // looking into.
+    let untouched = strip_document(matcher.only(None), &root_types, &query_doc);
+    let unchanged = document == untouched;
+    let unmatched: Vec<&str> = if unchanged {
+        matcher.targets().collect()
+    } else if targets.len() > 1 {
+        matcher
+            .targets()
+            .filter(|target| {
+                strip_document(matcher.only(Some(target)), &root_types, &query_doc) == untouched
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut notes = Vec::new();
+    if !unmatched.is_empty() {
+        let unchanged = if unchanged {
+            "; nothing was stripped"
+        } else {
+            ""
+        };
+        notes.push(format!(
+            "nothing in the query matches {}{unchanged}",
+            query_target::quoted_list(&unmatched)
+        ));
     }
 
-    let schema_doc = parse_schema::<String>(schema).expect("Failed to parse schema");
-    let query_doc = parse_query::<String>(query).expect("Failed to parse query");
+    Ok(Output { document, notes })
+}
 
-    let matcher = Matcher::new(&schema_doc, targets);
-
+/// Strips `matcher`'s targets from a parsed query, returning the printed
+/// document, or an empty string when nothing is left.
+fn strip_document<'q>(
+    matcher: Matcher<'_, '_>,
+    root_types: &util::RootTypes,
+    query_doc: &'q QueryDoc<'q, String>,
+) -> String {
     // Variables are gathered by name across every operation before the walk
     // starts. Fragments are shared, so a fragment has to know what is happening
     // to a variable without knowing which operation spread it. Where two
@@ -98,7 +164,6 @@ pub fn process(schema: &str, query: &str, targets: &[&str]) -> String {
         .map(|var| var.name.clone())
         .collect();
 
-    let root_types = util::detect_root_types(&schema_doc);
     let mut walk = Walk::default();
 
     // Strip every operation first. Fragments are reduced on demand as their
@@ -108,7 +173,7 @@ pub fn process(schema: &str, query: &str, targets: &[&str]) -> String {
     let mut stripped_ops: HashMap<usize, SelectionSet<String>> = HashMap::new();
     for (i, def) in query_doc.definitions.iter().enumerate() {
         if let QueryDef::Operation(op) = def {
-            let (root_type, selection_set) = util::operation_root(&root_types, op);
+            let (root_type, selection_set) = util::operation_root(root_types, op);
             if let Some(stripped) =
                 strip.strip_selection_set(Some(root_type), selection_set, &mut walk)
             {
@@ -509,9 +574,20 @@ impl<'s, 'q> Strip<'s, 'q, '_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::query_strip;
+    use crate::{input::Input, query_strip};
     use indoc::indoc;
     use pretty_assertions::assert_eq;
+
+    fn stripped(schema: &str, query: &str, targets: &[&str]) -> String {
+        query_strip::process(
+            &Input::inline(schema),
+            targets,
+            || Ok(Input::inline(query)),
+            &mut Vec::new(),
+        )
+        .unwrap()
+        .document
+    }
 
     const SCHEMA: &str = indoc! {"
         schema {
@@ -569,7 +645,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(SCHEMA, query, &["Profile"]);
+        let result = stripped(SCHEMA, query, &["Profile"]);
 
         assert_eq!(
             result,
@@ -597,7 +673,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(SCHEMA, query, &["User.name"]);
+        let result = stripped(SCHEMA, query, &["User.name"]);
 
         assert_eq!(
             result,
@@ -633,7 +709,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(SCHEMA, query, &["Avatar.url"]);
+        let result = stripped(SCHEMA, query, &["Avatar.url"]);
 
         assert_eq!(
             result,
@@ -663,7 +739,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(SCHEMA, query, &["User"]);
+        let result = stripped(SCHEMA, query, &["User"]);
 
         assert_eq!(
             result,
@@ -702,7 +778,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(SCHEMA, query, &["Node.id", "Company.name"]);
+        let result = stripped(SCHEMA, query, &["Node.id", "Company.name"]);
 
         assert_eq!(
             result,
@@ -737,7 +813,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(SCHEMA, query, &["User"]);
+        let result = stripped(SCHEMA, query, &["User"]);
 
         assert_eq!(
             result,
@@ -766,7 +842,7 @@ mod tests {
             }
         "};
 
-        assert_eq!(query_strip::process(SCHEMA, query, &["Node"]), "");
+        assert_eq!(stripped(SCHEMA, query, &["Node"]), "");
     }
 
     #[test]
@@ -779,7 +855,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(SCHEMA, query, &["SearchFilter"]);
+        let result = stripped(SCHEMA, query, &["SearchFilter"]);
 
         assert_eq!(
             result,
@@ -808,7 +884,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(SCHEMA, query, &["User"]);
+        let result = stripped(SCHEMA, query, &["User"]);
 
         assert_eq!(
             result,
@@ -843,7 +919,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(SCHEMA, query, &["Profile"]);
+        let result = stripped(SCHEMA, query, &["Profile"]);
 
         assert_eq!(
             result,
@@ -878,7 +954,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(SCHEMA, query, &["Profile.email"]);
+        let result = stripped(SCHEMA, query, &["Profile.email"]);
 
         assert_eq!(
             result,
@@ -906,7 +982,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(SCHEMA, query, &["Profile"]);
+        let result = stripped(SCHEMA, query, &["Profile"]);
 
         assert_eq!(
             result,
@@ -931,19 +1007,95 @@ mod tests {
             }
         "};
 
-        assert_eq!(query_strip::process(SCHEMA, query, &["User"]), "");
+        assert_eq!(stripped(SCHEMA, query, &["User"]), "");
+    }
+
+    /// The notes a strip writes to stderr, checking that it produced
+    /// `document`.
+    fn notes(schema: &str, query: &str, targets: &[&str], document: &str) -> Vec<String> {
+        let output = query_strip::process(
+            &Input::inline(schema),
+            targets,
+            || Ok(Input::inline(query)),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(output.document, document);
+        output.notes
+    }
+
+    fn strip_error(schema: &str, query: &str, targets: &[&str]) -> String {
+        query_strip::process(
+            &Input::inline(schema),
+            targets,
+            || Ok(Input::inline(query)),
+            &mut Vec::new(),
+        )
+        .expect_err("expected the strip to fail")
+        .to_string()
     }
 
     /// The empty document this command emits when everything is stripped has to
-    /// survive being piped back in.
+    /// survive being piped back in, silently, since whatever emitted it said
+    /// why.
     #[test]
     fn passes_an_empty_document_through() {
-        assert_eq!(query_strip::process(SCHEMA, "", &["User"]), "");
-        assert_eq!(query_strip::process(SCHEMA, "\n", &["User"]), "");
+        assert!(notes(SCHEMA, "", &["User"], "").is_empty());
+        assert!(notes(SCHEMA, "\n", &["User"], "").is_empty());
+    }
+
+    /// The schema is what the query is resolved against, not what is being
+    /// transformed, so a blank one fails rather than passing through, whether
+    /// or not the query is blank, and before any target is checked against it.
+    #[test]
+    fn rejects_a_blank_schema() {
+        let expected =
+            "schema (stdin) is empty; pass the schema the query is written against with -s";
+        for (query, targets) in [
+            ("{ user { name } }", &["User"][..]),
+            ("", &["User"][..]),
+            // A built-in scalar is a target any schema knows, even a blank one.
+            ("{ user { name } }", &["String"][..]),
+            ("{ user { name } }", &["query.graphql"][..]),
+        ] {
+            for schema in ["", "\n# no definitions\n"] {
+                assert_eq!(
+                    strip_error(schema, query, targets),
+                    expected,
+                    "{query:?} {targets:?}"
+                );
+            }
+        }
+    }
+
+    /// Targets are checked against the schema alone, before the query is read,
+    /// since reading it may block on stdin. A query file passed as a target
+    /// must fail rather than hang.
+    #[test]
+    fn rejects_bad_targets_without_reading_the_query() {
+        for (targets, expected) in [
+            (
+                &["Usr"][..],
+                "unknown type `Usr` in (stdin); did you mean `User`?",
+            ),
+            (
+                &["query.graphql", "User"][..],
+                "unknown target 'query.graphql'; pass query files with -q: -q query.graphql",
+            ),
+        ] {
+            let error = query_strip::process(
+                &Input::inline(SCHEMA),
+                targets,
+                || panic!("read the query before checking {targets:?}"),
+                &mut Vec::new(),
+            )
+            .expect_err("expected the strip to fail");
+            assert_eq!(error.to_string(), expected);
+        }
     }
 
     #[test]
-    fn leaves_a_query_untouched_when_nothing_matches() {
+    fn leaves_a_query_untouched_and_notes_it_when_nothing_matches() {
         let query = indoc! {"
             query Q {
               user {
@@ -952,9 +1104,125 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(SCHEMA, query, &["NoSuchType", "User.missing"]);
+        assert_eq!(
+            notes(SCHEMA, query, &["Avatar"], query),
+            ["nothing in the query matches `Avatar`; nothing was stripped"]
+        );
+        assert_eq!(
+            notes(SCHEMA, query, &["Avatar", "Company.name"], query),
+            ["nothing in the query matches `Avatar` or `Company.name`; nothing was stripped"]
+        );
+    }
 
-        assert_eq!(result, query);
+    /// Stripping nothing still drops fragments nothing spreads, so the output
+    /// can differ from the input while no target matched.
+    #[test]
+    fn notes_nothing_matched_even_when_unused_fragments_are_dropped() {
+        let query = indoc! {"
+            query Q {
+              user {
+                name
+              }
+            }
+
+            fragment Unused on Company {
+              name
+            }
+        "};
+
+        assert_eq!(
+            notes(
+                SCHEMA,
+                query,
+                &["Avatar"],
+                indoc! {"
+                    query Q {
+                      user {
+                        name
+                      }
+                    }
+                "}
+            ),
+            ["nothing in the query matches `Avatar`; nothing was stripped"]
+        );
+    }
+
+    #[test]
+    fn notes_only_the_targets_that_match_nothing() {
+        let query = indoc! {"
+            query Q {
+              user {
+                id
+                name
+              }
+            }
+        "};
+
+        assert_eq!(
+            notes(
+                SCHEMA,
+                query,
+                &["User.name", "Avatar"],
+                indoc! {"
+                    query Q {
+                      user {
+                        id
+                      }
+                    }
+                "}
+            ),
+            ["nothing in the query matches `Avatar`"]
+        );
+    }
+
+    /// `Profile` only appears inside the `User` match, which the walk removes
+    /// without looking into, but it matched all the same.
+    #[test]
+    fn does_not_note_a_target_matched_only_inside_another_match() {
+        let query = indoc! {"
+            query Q {
+              user {
+                profile {
+                  email
+                }
+              }
+              company {
+                id
+              }
+            }
+        "};
+
+        assert!(notes(
+            SCHEMA,
+            query,
+            &["User", "Profile"],
+            indoc! {"
+                query Q {
+                  company {
+                    id
+                  }
+                }
+            "}
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn rejects_unknown_targets() {
+        let query = "{ user { name } }";
+
+        assert_eq!(
+            strip_error(SCHEMA, query, &["Usr"]),
+            "unknown type `Usr` in (stdin); did you mean `User`?"
+        );
+        assert_eq!(
+            strip_error(SCHEMA, query, &["searchfilter"]),
+            "unknown type `searchfilter` in (stdin); did you mean `SearchFilter`?"
+        );
+        assert_eq!(
+            strip_error(SCHEMA, query, &["User.nmae"]),
+            "`User` has no field `nmae`; did you mean `name`?"
+        );
     }
 
     #[test]
@@ -998,7 +1266,7 @@ mod tests {
         "};
 
         // `bots` exists only in an extension, so stripping `Bot` must see it.
-        let result = query_strip::process(schema, query, &["Bot"]);
+        let result = stripped(schema, query, &["Bot"]);
         assert_eq!(
             result,
             indoc! {"
@@ -1011,7 +1279,7 @@ mod tests {
         );
 
         // So do its argument types and the fields the `Bot` extension adds.
-        let result = query_strip::process(schema, query, &["BotFilter", "Bot.model"]);
+        let result = stripped(schema, query, &["BotFilter", "Bot.model"]);
         assert_eq!(
             result,
             indoc! {"
@@ -1085,10 +1353,7 @@ mod tests {
             }
         "};
 
-        assert_eq!(
-            query_strip::process(REQUIRED_SCHEMA, query, &["SearchFilter"]),
-            ""
-        );
+        assert_eq!(stripped(REQUIRED_SCHEMA, query, &["SearchFilter"]), "");
     }
 
     #[test]
@@ -1104,7 +1369,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(REQUIRED_SCHEMA, query, &["SearchFilter"]);
+        let result = stripped(REQUIRED_SCHEMA, query, &["SearchFilter"]);
 
         // `$n` fed only the removed field, so it goes too.
         assert_eq!(
@@ -1140,7 +1405,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(REQUIRED_SCHEMA, query, &["SearchFilter"]);
+        let result = stripped(REQUIRED_SCHEMA, query, &["SearchFilter"]);
 
         assert_eq!(
             result,
@@ -1164,7 +1429,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(REQUIRED_SCHEMA, query, &["SearchFilter"]);
+        let result = stripped(REQUIRED_SCHEMA, query, &["SearchFilter"]);
 
         assert_eq!(
             result,
@@ -1190,7 +1455,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(REQUIRED_SCHEMA, query, &["Sort"]);
+        let result = stripped(REQUIRED_SCHEMA, query, &["Sort"]);
 
         assert_eq!(
             result,
@@ -1218,7 +1483,7 @@ mod tests {
             }
         "};
         assert_eq!(
-            query_strip::process(REQUIRED_SCHEMA, query, &["Sort"]),
+            stripped(REQUIRED_SCHEMA, query, &["Sort"]),
             indoc! {"
                 query {
                   search(filter: {status: ACTIVE, term: \"x\"}) {
@@ -1246,7 +1511,7 @@ mod tests {
             }
         "};
         assert_eq!(
-            query_strip::process(REQUIRED_SCHEMA, query, &["Status"]),
+            stripped(REQUIRED_SCHEMA, query, &["Status"]),
             indoc! {"
                 query {
                   items {
@@ -1267,7 +1532,7 @@ mod tests {
             }
         "};
         assert_eq!(
-            query_strip::process(REQUIRED_SCHEMA, query, &["Sort"]),
+            stripped(REQUIRED_SCHEMA, query, &["Sort"]),
             indoc! {"
                 query {
                   batch(filters: [{status: ACTIVE}, {status: ARCHIVED}]) {
@@ -1284,7 +1549,7 @@ mod tests {
             }
         "};
         assert_eq!(
-            query_strip::process(REQUIRED_SCHEMA, query, &["Status"]),
+            stripped(REQUIRED_SCHEMA, query, &["Status"]),
             indoc! {"
                 query {
                   batch {
@@ -1308,7 +1573,7 @@ mod tests {
         "};
 
         assert_eq!(
-            query_strip::process(REQUIRED_SCHEMA, query, &["Sort"]),
+            stripped(REQUIRED_SCHEMA, query, &["Sort"]),
             indoc! {"
                 query {
                   me @auth(role: ADMIN) {
@@ -1318,7 +1583,7 @@ mod tests {
             "}
         );
         assert_eq!(
-            query_strip::process(REQUIRED_SCHEMA, query, &["Role"]),
+            stripped(REQUIRED_SCHEMA, query, &["Role"]),
             indoc! {"
                 query {
                   me {
@@ -1356,7 +1621,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(REQUIRED_SCHEMA, query, &["SearchFilter", "Role"]);
+        let result = stripped(REQUIRED_SCHEMA, query, &["SearchFilter", "Role"]);
 
         assert_eq!(
             result,
@@ -1398,7 +1663,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(REQUIRED_SCHEMA, query, &["SearchFilter", "Role"]);
+        let result = stripped(REQUIRED_SCHEMA, query, &["SearchFilter", "Role"]);
 
         assert_eq!(
             result,
@@ -1450,7 +1715,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(REQUIRED_SCHEMA, query, &["SearchFilter", "Item"]);
+        let result = stripped(REQUIRED_SCHEMA, query, &["SearchFilter", "Item"]);
 
         // `Items` is on a stripped type, so its spread goes rather than being
         // left pointing at a fragment that is no longer emitted.
@@ -1487,7 +1752,7 @@ mod tests {
         "};
 
         assert_eq!(
-            query_strip::process(REQUIRED_SCHEMA, query, &["Sort"]),
+            stripped(REQUIRED_SCHEMA, query, &["Sort"]),
             indoc! {"
                 query($f: SearchFilter = {status: ACTIVE, term: \"x\"}) {
                   items(filter: $f) {
@@ -1532,7 +1797,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(REQUIRED_SCHEMA, query, &["Status"]);
+        let result = stripped(REQUIRED_SCHEMA, query, &["Status"]);
 
         assert_eq!(
             result,
@@ -1579,7 +1844,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(REQUIRED_SCHEMA, query, &["Status"]);
+        let result = stripped(REQUIRED_SCHEMA, query, &["Status"]);
 
         assert_eq!(
             result,
@@ -1633,7 +1898,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(DEFAULT_SCHEMA, query, &["Status"]);
+        let result = stripped(DEFAULT_SCHEMA, query, &["Status"]);
 
         assert_eq!(
             result,
@@ -1664,7 +1929,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(DEFAULT_SCHEMA, query, &["Status"]);
+        let result = stripped(DEFAULT_SCHEMA, query, &["Status"]);
 
         assert_eq!(
             result,
@@ -1693,7 +1958,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(DEFAULT_SCHEMA, query, &["String"]);
+        let result = stripped(DEFAULT_SCHEMA, query, &["String"]);
 
         assert_eq!(
             result,
@@ -1752,7 +2017,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(LIST_SCHEMA, query, &["Status"]);
+        let result = stripped(LIST_SCHEMA, query, &["Status"]);
 
         assert_eq!(
             result,
@@ -1791,7 +2056,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(LIST_SCHEMA, query, &["Status"]);
+        let result = stripped(LIST_SCHEMA, query, &["Status"]);
 
         assert_eq!(
             result,
@@ -1820,7 +2085,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(LIST_SCHEMA, query, &["Status"]);
+        let result = stripped(LIST_SCHEMA, query, &["Status"]);
 
         assert_eq!(
             result,
@@ -1853,7 +2118,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(LIST_SCHEMA, query, &["Status"]);
+        let result = stripped(LIST_SCHEMA, query, &["Status"]);
 
         assert_eq!(
             result,
@@ -1883,7 +2148,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(LIST_SCHEMA, query, &["Status"]);
+        let result = stripped(LIST_SCHEMA, query, &["Status"]);
 
         assert_eq!(
             result,
@@ -1913,7 +2178,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(LIST_SCHEMA, query, &["Status"]);
+        let result = stripped(LIST_SCHEMA, query, &["Status"]);
 
         assert_eq!(
             result,
@@ -1946,7 +2211,7 @@ mod tests {
             }
         "};
 
-        let result = query_strip::process(LIST_SCHEMA, query, &["Status"]);
+        let result = stripped(LIST_SCHEMA, query, &["Status"]);
 
         assert_eq!(
             result,
@@ -1960,6 +2225,90 @@ mod tests {
                   }
                 }
             "}
+        );
+    }
+
+    #[test]
+    fn uses_only_the_first_definition_of_a_repeated_fragment() {
+        // The second `UserFields` is dropped rather than read in place of the
+        // first, so the spread keeps `id` and nothing is printed twice.
+        let query = indoc! {"
+            query {
+              user {
+                ...UserFields
+              }
+            }
+
+            fragment UserFields on User {
+              id
+              name
+            }
+
+            fragment UserFields on User {
+              name
+            }
+        "};
+
+        let mut warnings = Vec::new();
+        let output = query_strip::process(
+            &Input::inline(SCHEMA),
+            &["User.name"],
+            || Ok(Input::inline(query)),
+            &mut warnings,
+        )
+        .unwrap();
+
+        assert_eq!(
+            output.document,
+            indoc! {"
+                query {
+                  user {
+                    ...UserFields
+                  }
+                }
+
+                fragment UserFields on User {
+                  id
+                }
+            "}
+        );
+        assert_eq!(
+            warnings,
+            ["fragment `UserFields` is defined more than once in (stdin) (at 7:1, 12:1); only the first is used"]
+        );
+    }
+
+    #[test]
+    fn warns_of_a_repeated_type_even_when_the_strip_then_fails() {
+        // `email` is only on the `User` that is dropped, so the target is
+        // unknown, and the warning is what says why.
+        let schema = indoc! {"
+            type Query {
+              user: User
+            }
+
+            type User {
+              id: ID
+            }
+
+            type User {
+              email: String
+            }
+        "};
+
+        let mut warnings = Vec::new();
+        let error = query_strip::process(
+            &Input::inline(schema),
+            &["User.email"],
+            || panic!("read the query before checking the targets"),
+            &mut warnings,
+        )
+        .expect_err("expected the strip to fail");
+
+        assert_eq!(error.to_string(), "`User` has no field `email`");
+        assert_eq!(
+            warnings,
+            ["type `User` is defined more than once in (stdin) (at 5:1, 9:1); only the first is used"]
         );
     }
 }
