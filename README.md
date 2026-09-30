@@ -464,10 +464,11 @@ With nothing piped in, a command that would read stdin fails with a usage error
 
 Stdout is only ever a GraphQL document, ending in exactly one newline, or
 nothing at all when nothing survives, so an empty result redirected to a file
-leaves it zero bytes (`[ -s out.graphql ]` fails). Errors, warnings, and notes such as a target that matched
-nothing, go to stderr. The exit code is 0 on success, including a valid target
-that matches nothing; 1 for a bad input (unreadable, invalid, or an unknown
-target); 2 for a usage error.
+leaves it zero bytes (`[ -s out.graphql ]` fails). Errors, warnings, and notes
+(such as a target that matched nothing) go to stderr. The exit code is 0 on
+success, including a valid target that matches nothing; 1 for a bad input
+(unreadable, invalid, or an unknown target); 2 for a usage error. A reader that
+stops early, such as `| head`, is not an error: the command exits 0 quietly.
 
 An empty document (nothing but whitespace, commas, and comments) passes
 straight through every command as an empty document. `focus` and `strip`

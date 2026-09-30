@@ -9,7 +9,7 @@ license = "MIT"
 repository = "https://github.com/jeffutter/graphql-document-utils"
 
 [dependencies]
-clap = { version = "4.5.28", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive"] }
 clap-stdin = "0.6.0"
 graphql-normalize = { path = "graphql-normalize-lib" }
 graphql-parser = "0.4.1"

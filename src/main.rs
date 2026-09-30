@@ -184,15 +184,10 @@ fn main() -> ExitCode {
 /// and every subcommand below it. Applied here rather than per variant, so a
 /// new subcommand gets it without having to remember to.
 fn command() -> clap::Command {
-    fn with_conventions(mut command: clap::Command) -> clap::Command {
-        let names: Vec<String> = command
-            .get_subcommands()
-            .map(|subcommand| subcommand.get_name().to_owned())
-            .collect();
-        for name in names {
-            command = command.mut_subcommand(name, with_conventions);
-        }
-        command.after_help(OUTPUT_CONVENTIONS)
+    fn with_conventions(command: clap::Command) -> clap::Command {
+        command
+            .mut_subcommands(with_conventions)
+            .after_help(OUTPUT_CONVENTIONS)
     }
     with_conventions(Args::command())
 }
