@@ -4,9 +4,13 @@
 //! documents passing from one command to the next in a pipe, warnings printed
 //! beside a result or ahead of an error, the exact bytes of stdout: one
 //! trailing newline, or nothing for an empty result, what happens when stdout
-//! stops taking them, and the output conventions every command's help ends
-//! with.
-//! Everything else is tested against each module's `process()`.
+//! stops taking them, the output conventions every command's help ends with,
+//! the help a bare invocation prints, and the skill `skill` prints. Also the
+//! claims the help and the skill make of every command at once, which one
+//! command's `process()` cannot show: that no command changes a file, which
+//! ones keep repeated definitions, that comments are dropped and descriptions
+//! kept, and what each kind of failure exits with. Everything else is tested
+//! against each module's `process()`.
 
 use std::{
     fs,
@@ -218,6 +222,8 @@ fn missing_required_arguments_are_a_usage_error() {
     let schema = schema.to_str().unwrap();
 
     for args in [
+        &["query", "focus", "User"][..],
+        &["query", "strip", "User"][..],
         &["query", "focus", "-s", schema][..],
         &["query", "strip", "-s", schema][..],
         &["schema", "focus", "-s", schema][..],
@@ -580,7 +586,376 @@ fn every_help_states_the_output_conventions() {
             ] {
                 assert!(help.contains(convention), "{command:?} {flag}:\n{help}");
             }
+            assert!(
+                help.ends_with("\n\nExit codes: 0 on success, including a valid target that matches nothing; 1 for\na bad input (unreadable, invalid, unknown target) or a failed write; 2 for a\nusage error.\n"),
+                "{command:?} {flag} ends with the conventions:\n{help}"
+            );
         }
+    }
+}
+
+/// The tool or a noun run on its own is asking what it can do, so it prints
+/// the help `-h` would, to stdout, with nothing on stderr, and exits 0, without
+/// reading the stdin it is given.
+#[test]
+fn a_bare_invocation_prints_the_help() {
+    for command in [&[][..], &["query"][..], &["schema"][..]] {
+        let help = success(run_with_open_stdin(&[command, &["-h"]].concat()));
+        let output = run_with_open_stdin(command);
+        assert_eq!(stderr(&output), "", "{command:?}");
+        assert_eq!(success(output), help, "{command:?}");
+    }
+
+    let help = success(run_with_open_stdin(&[]));
+    assert!(help.contains("\nCommon tasks:\n"), "{help}");
+    for noun in ["query", "schema"] {
+        let verbs = success(run_with_open_stdin(&[noun]));
+        assert!(verbs.contains("\nCommands:\n"), "{noun}:\n{verbs}");
+    }
+}
+
+/// `skill` prints the skill through the same path as any document: to stdout,
+/// ending in one newline, with nothing on stderr, and without reading the
+/// stdin it is given. What it says is tested in `skill`. Its help leaves out
+/// the output conventions, which describe the commands that print GraphQL.
+#[test]
+fn skill_prints_the_skill() {
+    let output = run_with_open_stdin(&["skill"]);
+    assert_eq!(stderr(&output), "");
+    let skill = success(output);
+    assert!(
+        skill.starts_with("---\nname: graphql-document-utils\n"),
+        "{skill}"
+    );
+    assert!(skill.ends_with("stdin.\n"), "{skill}");
+
+    for flag in ["-h", "--help"] {
+        let help = success(run_with_open_stdin(&["skill", flag]));
+        assert!(help.contains("Agent Skill"), "{flag}:\n{help}");
+        assert!(
+            !help.contains("Output is a GraphQL document"),
+            "{flag}:\n{help}"
+        );
+    }
+}
+
+/// Anything else clap cannot parse is a usage error too.
+#[test]
+fn an_unknown_command_or_flag_is_a_usage_error() {
+    for (args, message) in [
+        (&["frob"][..], "unrecognized subcommand"),
+        (&["schema", "format", "--frob"][..], "unexpected argument"),
+    ] {
+        let output = run_with_open_stdin(args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(
+            stderr(&output).contains(message),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+        assert!(output.stdout.is_empty(), "{args:?}");
+    }
+}
+
+/// An input that is wrong, rather than the command line, exits 1 with one
+/// `error:` line and nothing on stdout.
+#[test]
+fn bad_input_exits_1() {
+    let schema = schema_file("bad-input");
+    let schema = schema.to_str().unwrap();
+
+    for (args, input, error) in [
+        (
+            &["schema", "format", "-s", "nope.graphql"][..],
+            "",
+            "error: cannot read schema 'nope.graphql': No such file or directory\n",
+        ),
+        (
+            &["schema", "format"][..],
+            "type Query {",
+            "error: failed to parse schema (stdin) at 1:13: unexpected end of input; expected Name\n",
+        ),
+        (
+            &["query", "focus", "-s", schema, "User."][..],
+            QUERY,
+            "error: invalid target `User.`; expected `Type` or `Type.field`\n",
+        ),
+        (
+            &["query", "strip", "-s", schema, "Usr"][..],
+            QUERY,
+            &format!("error: unknown type `Usr` in '{schema}'; did you mean `User`?\n"),
+        ),
+    ] {
+        let output = run_with_input(args, input);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert_eq!(stderr(&output), error, "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+    }
+}
+
+/// Only descriptions are part of a document; `#` comments are not, so no
+/// command keeps them.
+#[test]
+fn comments_are_dropped_and_descriptions_kept() {
+    let schema = scratch_file(
+        "comments",
+        "schema.graphql",
+        "# The schema.\n\"The root.\"\ntype Query {\n  # Who asks.\n  user: User\n}\n\n\"A user.\"\ntype User { id: ID name: String }\n",
+    );
+    let schema = schema.to_str().unwrap();
+    let query = "# The query.\n{\n  user {\n    # Who they are.\n    name\n    id\n  }\n}\n";
+
+    for (args, input, descriptions) in [
+        (&["query", "normalize"][..], query, &[][..]),
+        (&["query", "focus", "-s", schema, "User"][..], query, &[]),
+        (&["query", "strip", "-s", schema, "User.id"][..], query, &[]),
+        (
+            &["schema", "format", "-s", schema][..],
+            "",
+            &["\"The root.\"", "\"A user.\""],
+        ),
+        (
+            &["schema", "sort", "-s", schema][..],
+            "",
+            &["\"The root.\"", "\"A user.\""],
+        ),
+        (
+            &["schema", "focus", "-s", schema, "User"][..],
+            "",
+            &["\"A user.\""],
+        ),
+        (
+            &["schema", "prune", "-s", schema, "-q", "-"][..],
+            query,
+            &["\"The root.\"", "\"A user.\""],
+        ),
+    ] {
+        let output = success(run_with_input(args, input));
+        assert!(output.contains("name"), "{args:?}:\n{output}");
+        assert!(!output.contains('#'), "{args:?}:\n{output}");
+        for description in descriptions {
+            assert!(output.contains(description), "{args:?}:\n{output}");
+        }
+    }
+}
+
+/// A name defined twice warns, and only the first definition is used, except
+/// by the commands that only lay a document out, which keep both and say
+/// nothing.
+#[test]
+fn only_the_commands_that_lay_a_document_out_keep_repeats() {
+    let schema = scratch_file(
+        "repeats-per-command",
+        "schema.graphql",
+        "type Query { user: User }\ntype User { id: ID }\ntype User { name: String }\n",
+    );
+    let schema = schema.to_str().unwrap();
+    let query = "{ user { ...F } }\nfragment F on User { id }\nfragment F on User { name }\n";
+
+    for (args, input, repeated, keeps_both) in [
+        (&["query", "normalize"][..], query, "fragment F", true),
+        (
+            &["query", "focus", "-s", schema, "User"][..],
+            query,
+            "fragment F",
+            false,
+        ),
+        (
+            &["query", "strip", "-s", schema, "Query"][..],
+            query,
+            "fragment F",
+            false,
+        ),
+        (
+            &["schema", "format", "-s", schema][..],
+            "",
+            "type User",
+            true,
+        ),
+        (&["schema", "sort", "-s", schema][..], "", "type User", true),
+        (
+            &["schema", "focus", "-s", schema, "User"][..],
+            "",
+            "type User",
+            false,
+        ),
+        (
+            &["schema", "prune", "-s", schema, "-q", "-"][..],
+            query,
+            "type User",
+            false,
+        ),
+    ] {
+        let output = run_with_input(args, input);
+        let stderr = stderr(&output);
+        let printed = success(output);
+        let copies = if keeps_both { 2 } else { 1 };
+        assert_eq!(
+            printed.matches(repeated).count(),
+            copies,
+            "{args:?}:\n{printed}"
+        );
+        let warnings: Vec<_> = stderr
+            .lines()
+            .filter(|line| line.starts_with("warning:"))
+            .collect();
+        assert_eq!(warnings.is_empty(), keeps_both, "{args:?}:\n{stderr}");
+        for warning in warnings {
+            assert!(
+                warning.ends_with("only the first is used"),
+                "{args:?}: {warning}"
+            );
+        }
+    }
+}
+
+/// `schema format` lays a schema out in the order it is written.
+#[test]
+fn format_keeps_the_source_order() {
+    let schema = "type User { id: ID }\ntype Query { user: User }\n";
+    assert_eq!(
+        success(run_with_input(&["schema", "format"], schema)),
+        "type User {\n  id: ID\n}\n\ntype Query {\n  user: User\n}\n"
+    );
+}
+
+/// A target that matches nothing is not an error: exit 0, the document on
+/// stdout, and the reason on stderr.
+#[test]
+fn a_target_that_matches_nothing_gets_a_note() {
+    let schema = schema_file("matches-nothing");
+    let schema = schema.to_str().unwrap();
+
+    let output = run_with_input(&["query", "focus", "-s", schema, "User"], "{ __typename }");
+    assert_eq!(
+        stderr(&output),
+        "note: no selection reaches `User`; output is empty\n"
+    );
+    assert_eq!(success(output), "");
+
+    let output = run_with_input(&["query", "strip", "-s", schema, "User.id"], QUERY);
+    assert_eq!(
+        stderr(&output),
+        "note: nothing in the query matches `User.id`; nothing was stripped\n"
+    );
+    assert_eq!(success(output), "{\n  user {\n    name\n  }\n}\n");
+}
+
+#[test]
+fn an_empty_strip_pipes_into_normalize() {
+    let schema = schema_file("empty-strip");
+    let schema = schema.to_str().unwrap();
+
+    let stripped = success(run_with_input(
+        &["query", "strip", "-s", schema, "User"],
+        QUERY,
+    ));
+    assert_eq!(stripped, "");
+    let output = run_with_input(&["query", "normalize"], &stripped);
+    assert_eq!(stderr(&output), "");
+    assert_eq!(success(output), "");
+}
+
+/// `schema focus` on a type the query root does not reach drops the root, so
+/// pruning its output for a query keeps nothing: prune first, then focus.
+#[test]
+fn focusing_before_pruning_leaves_nothing() {
+    let query = query_file("focus-then-prune");
+    let query = query.to_str().unwrap();
+
+    let focused = success(run_with_input(&["schema", "focus", "User"], SCHEMA));
+    assert!(!focused.contains("Query"), "{focused}");
+    let output = run_with_input(&["schema", "prune", "-q", query], &focused);
+    assert_eq!(stderr(&output), "");
+    assert_eq!(success(output), "");
+}
+
+/// Every command only prints: the files it reads are left as they were, and
+/// none is added beside them.
+#[test]
+fn no_command_changes_a_file() {
+    let schema = schema_file("changes-no-file");
+    let query = query_file("changes-no-file");
+    let dir = schema.parent().unwrap();
+    let listing = || {
+        let mut files: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let contents = fs::read(&path).unwrap();
+                (path, contents)
+            })
+            .collect();
+        files.sort();
+        files
+    };
+    let before = listing();
+    let (schema, query) = (schema.to_str().unwrap(), query.to_str().unwrap());
+
+    for args in [
+        &["query", "normalize", "-q", query][..],
+        &["query", "focus", "-s", schema, "-q", query, "User"][..],
+        &["query", "strip", "-s", schema, "-q", query, "User.id"][..],
+        &["schema", "format", "-s", schema][..],
+        &["schema", "sort", "-s", schema][..],
+        &["schema", "focus", "-s", schema, "User"][..],
+        &["schema", "prune", "-s", schema, "-q", query][..],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_graphql-document-utils"))
+            .args(args)
+            .current_dir(dir)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{args:?}");
+        assert!(!output.stdout.is_empty(), "{args:?}");
+    }
+    assert_eq!(listing(), before);
+}
+
+/// A command reads a pipe until it closes, however long that takes, as a
+/// filter does; only a terminal is refused. So a stdin left open and unwritten
+/// is waited on.
+#[test]
+fn a_command_waits_on_an_open_stdin() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_graphql-document-utils"))
+        .args(["schema", "format"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    thread::sleep(Duration::from_millis(300));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "exited before stdin closed"
+    );
+
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(SCHEMA.as_bytes()).unwrap();
+    drop(stdin);
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(stderr(&output), "");
+    assert!(
+        stdout(&output).starts_with("type Query {"),
+        "{}",
+        stdout(&output)
+    );
+}
+
+/// A noun can be run without a verb, but not with one it does not have, which
+/// stays a usage error rather than printing the noun's help.
+#[test]
+fn an_unknown_verb_is_a_usage_error() {
+    for args in [&["query", "prune"][..], &["schema", "normalize"][..]] {
+        let output = run_with_open_stdin(args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(
+            stderr(&output).contains("unrecognized subcommand"),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+        assert!(output.stdout.is_empty(), "{args:?}");
     }
 }
 

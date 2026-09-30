@@ -1,0 +1,25 @@
+query GetUser($id: ID!, $first: Int, $filter: SearchFilter) {
+  user(id: $id) {
+    name
+    profile {
+      bio
+      avatar {
+        url
+      }
+    }
+  }
+  company {
+    employees(first: $first) {
+      name
+    }
+  }
+  search(filter: $filter) {
+    __typename
+    ... on User {
+      email
+    }
+    ... on Company {
+      name
+    }
+  }
+}

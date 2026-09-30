@@ -1,0 +1,8 @@
+query CompanyEmployees {
+  company {
+    name
+    employees(first: 10) {
+      email
+    }
+  }
+}

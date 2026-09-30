@@ -2,6 +2,7 @@
 name = "graphql-document-utils"
 version = "0.1.2"
 edition = "2021"
+rust-version = "1.85"
 authors = ["Jeffery Utter <jeff@jeffutter.com>"]
 readme = "README.md"
 description = "Utilities to process GraphQL query and schema documents"
@@ -39,6 +40,8 @@ path = "src/main.rs"
 
 [dev-dependencies]
 indoc = "2.0.6"
+insta = "1.48.0"
+serde_norway = "0.9.42"
 
 [target."cfg(unix)".dev-dependencies]
 rustix = { version = "1.1.5", features = ["pty", "fs"] }

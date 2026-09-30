@@ -1,0 +1,11 @@
+---
+source: tests/examples.rs
+expression: transcript(&examples)
+---
+$ graphql-document-utils skill
+exit: 0
+stdout: the skill, as in src/snapshots/graphql_document_utils__skill__tests__snapshot.snap
+
+$ graphql-document-utils skill > ~/.claude/skills/graphql-document-utils/SKILL.md
+exit: 0
+stdout: the skill, as in src/snapshots/graphql_document_utils__skill__tests__snapshot.snap

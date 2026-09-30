@@ -19,3 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Field argument values, directive argument values, and variable defaults are
   now treated the same way. Input object fields are sorted by key in all three
   positions, including objects nested inside lists.
+
+### Fixed
+
+- A selection set is always sorted as fields, then fragment spreads, then
+  inline fragments. Before, spreads and inline fragments were sorted by their
+  name prefixed with `zzzz` and `zzzzzzzz`, so a field whose name sorted after
+  that prefix, such as `zzzzb`, came after the spreads, and a spread named
+  `zzzzc` after an inline fragment.

@@ -1,0 +1,61 @@
+---
+source: tests/examples.rs
+expression: transcript(&examples)
+---
+$ graphql-document-utils query focus -s schema.graphql -q query.graphql Profile
+exit: 0
+stdout:
+query GetUser($id: ID!) {
+  user(id: $id) {
+    profile {
+      bio
+      avatar {
+        url
+      }
+    }
+  }
+}
+
+$ graphql-document-utils query focus -s schema.graphql -q query.graphql User.email Query.company
+exit: 0
+stdout:
+query GetUser($first: Int, $filter: SearchFilter) {
+  company {
+    employees(first: $first) {
+      name
+    }
+  }
+  search(filter: $filter) {
+    ... on User {
+      email
+    }
+  }
+}
+
+$ cat query.graphql | graphql-document-utils query focus -s schema.graphql Node
+exit: 0
+stdout:
+query GetUser($id: ID!, $first: Int, $filter: SearchFilter) {
+  user(id: $id) {
+    name
+    profile {
+      bio
+      avatar {
+        url
+      }
+    }
+  }
+  company {
+    employees(first: $first) {
+      name
+    }
+  }
+  search(filter: $filter) {
+    ... on User {
+      email
+    }
+    ... on Company {
+      name
+    }
+  }
+}

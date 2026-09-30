@@ -555,4 +555,105 @@ mod tests {
 
         assert_eq!(result.trim(), expected_schema.trim());
     }
+
+    /// The schema definition comes before directives, and names compare as
+    /// written, so uppercase sorts before lowercase.
+    #[test]
+    fn test_sort_compares_names_as_written() {
+        let schema = indoc! {"
+            directive @b on FIELD_DEFINITION
+
+            directive @A on FIELD_DEFINITION
+
+            schema {
+              query: b
+            }
+
+            type b {
+              id: ID
+            }
+
+            type Z {
+              id: ID
+            }
+
+            type a {
+              id: ID
+            }
+        "};
+
+        let expected_schema = indoc! {"
+            schema {
+              query: b
+            }
+
+            directive @A on FIELD_DEFINITION
+
+            directive @b on FIELD_DEFINITION
+
+            type Z {
+              id: ID
+            }
+
+            type a {
+              id: ID
+            }
+
+            type b {
+              id: ID
+            }
+        "};
+
+        assert_eq!(sorted(schema).trim(), expected_schema.trim());
+    }
+
+    /// Members keep their source order, a name defined twice keeps both
+    /// definitions, and descriptions stay while comments go.
+    #[test]
+    fn test_sort_keeps_members_and_repeats_as_written() {
+        let schema = indoc! {"
+            # Dropped.
+            \"Kept.\"
+            type Z {
+              f(b: Int, a: Int): Int
+            }
+
+            input I {
+              b: Int
+              a: Int
+            }
+
+            enum S {
+              B
+              A
+            }
+
+            scalar D
+
+            scalar D
+        "};
+
+        let expected_schema = indoc! {"
+            scalar D
+
+            scalar D
+
+            input I {
+              b: Int
+              a: Int
+            }
+
+            enum S {
+              B
+              A
+            }
+
+            \"Kept.\"
+            type Z {
+              f(b: Int, a: Int): Int
+            }
+        "};
+
+        assert_eq!(sorted(schema).trim(), expected_schema.trim());
+    }
 }

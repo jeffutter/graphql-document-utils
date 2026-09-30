@@ -1,0 +1,66 @@
+---
+source: tests/examples.rs
+expression: transcript(&examples)
+---
+$ graphql-document-utils query strip -s schema.graphql -q query.graphql Profile
+exit: 0
+stdout:
+query GetUser($id: ID!, $first: Int, $filter: SearchFilter) {
+  user(id: $id) {
+    name
+  }
+  company {
+    employees(first: $first) {
+      name
+    }
+  }
+  search(filter: $filter) {
+    __typename
+    ... on User {
+      email
+    }
+    ... on Company {
+      name
+    }
+  }
+}
+
+$ graphql-document-utils query strip -s schema.graphql -q query.graphql SearchFilter User.email
+exit: 0
+stdout:
+query GetUser($id: ID!, $first: Int) {
+  user(id: $id) {
+    name
+    profile {
+      bio
+      avatar {
+        url
+      }
+    }
+  }
+  company {
+    employees(first: $first) {
+      name
+    }
+  }
+  search {
+    __typename
+    ... on Company {
+      name
+    }
+  }
+}
+
+$ cat query.graphql | graphql-document-utils query strip -s schema.graphql SearchFilter | graphql-document-utils query focus -s schema.graphql Profile | graphql-document-utils query normalize
+exit: 0 | 0 | 0
+stdout:
+query GetUser($id: ID!) {
+  user(id: $id) {
+    profile {
+      avatar {
+        url
+      }
+      bio
+    }
+  }
+}

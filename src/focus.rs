@@ -1085,4 +1085,81 @@ mod tests {
         "};
         assert_eq!(result.trim(), expected_schema.trim());
     }
+
+    #[test]
+    fn test_focus_walks_union_members() {
+        let schema = indoc! {"
+            type Query {
+              search: [SearchResult]
+            }
+
+            type Page {
+              results: SearchResult
+            }
+
+            type User {
+              id: ID
+            }
+
+            type Bot {
+              id: ID
+            }
+
+            type Other {
+              id: ID
+            }
+
+            union SearchResult = User | Bot
+        "};
+
+        let expected_schema = indoc! {"
+            type Page {
+              results: SearchResult
+            }
+
+            type User {
+              id: ID
+            }
+
+            type Bot {
+              id: ID
+            }
+
+            union SearchResult = User | Bot
+        "};
+
+        assert_eq!(focused(schema, &["Page"]).trim(), expected_schema.trim());
+    }
+
+    /// The query root is kept like any other type a given one reaches.
+    #[test]
+    fn test_focus_keeps_a_query_root_a_given_type_reaches() {
+        let schema = indoc! {"
+            type Query {
+              user: User
+            }
+
+            type User {
+              id: ID
+              root: Query
+            }
+
+            type Other {
+              id: ID
+            }
+        "};
+
+        let expected_schema = indoc! {"
+            type Query {
+              user: User
+            }
+
+            type User {
+              id: ID
+              root: Query
+            }
+        "};
+
+        assert_eq!(focused(schema, &["User"]).trim(), expected_schema.trim());
+    }
 }

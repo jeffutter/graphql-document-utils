@@ -100,13 +100,97 @@ pub enum Error {
 }
 
 impl Error {
+    /// Whether the command line is what needs fixing, as with clap's own
+    /// errors, rather than an input or where the output goes.
+    pub fn is_usage(&self) -> bool {
+        matches!(self, Error::NoInput { .. } | Error::StdinTwice)
+    }
+
     /// The status the process exits with: 2 for a usage error, the same as
-    /// clap's own, and 1 for an error in the input itself.
-    pub fn exit_code(&self) -> ExitCode {
-        match self {
-            Error::NoInput { .. } | Error::StdinTwice => ExitCode::from(2),
-            _ => ExitCode::FAILURE,
+    /// clap's own, and 1 for everything else.
+    pub fn status(&self) -> u8 {
+        if self.is_usage() {
+            2
+        } else {
+            1
         }
+    }
+
+    pub fn exit_code(&self) -> ExitCode {
+        ExitCode::from(self.status())
+    }
+
+    /// What went wrong, in a few words, for the skill's list of what each exit
+    /// code means. Variants that read the same to a user share one.
+    pub fn summary(&self) -> &'static str {
+        match self {
+            Error::NoInput { .. } => "no document to read (no flag, and stdin a terminal)",
+            Error::StdinTwice => "both of `schema prune`'s documents on stdin",
+            Error::Read { .. } => "an unreadable file",
+            Error::Parse { .. } => "a parse error (with line and column)",
+            Error::BlankSchema { .. } => "a blank schema for `query focus` or `query strip`",
+            Error::InvalidTarget { .. } | Error::PathAsTarget { .. } => {
+                "a malformed target (or a file passed as one)"
+            }
+            Error::UnknownType { .. } | Error::UnknownField { .. } | Error::NoFields { .. } => {
+                "an unknown type or field (with a did-you-mean when a name is close)"
+            }
+            Error::FieldInSchemaFocus { .. } | Error::BuiltInScalar { .. } => {
+                "a field or built-in scalar given to `schema focus`"
+            }
+            Error::Write { .. } => "a failed write to stdout (as on a full disk)",
+        }
+    }
+
+    /// One error of each variant, in the order they are declared, so what the
+    /// exit codes mean can be listed from the errors themselves. A test checks
+    /// no variant is missing.
+    pub fn one_of_each() -> Vec<Error> {
+        let origin = || Origin::Stdin;
+        let target = || String::new();
+        let source = || io::Error::other("");
+        vec![
+            Error::NoInput { kind: Kind::Query },
+            Error::StdinTwice,
+            Error::Read {
+                kind: Kind::Query,
+                origin: origin(),
+                source: source(),
+            },
+            Error::Parse {
+                kind: Kind::Query,
+                origin: origin(),
+                position: None,
+                message: String::new(),
+            },
+            Error::BlankSchema { origin: origin() },
+            Error::InvalidTarget { target: target() },
+            Error::PathAsTarget {
+                target: target(),
+                kind: Kind::Query,
+            },
+            Error::UnknownType {
+                name: target(),
+                origin: origin(),
+                suggestion: None,
+            },
+            Error::UnknownField {
+                type_name: target(),
+                field: target(),
+                suggestion: None,
+            },
+            Error::NoFields {
+                type_name: target(),
+                kind: "",
+                target: target(),
+            },
+            Error::FieldInSchemaFocus { target: target() },
+            Error::BuiltInScalar {
+                name: target(),
+                origin: origin(),
+            },
+            Error::Write { source: source() },
+        ]
     }
 
     /// Builds a `Parse` error from one of graphql-parser's.
@@ -223,6 +307,46 @@ mod tests {
             Error::NoInput { kind: Kind::Schema }.to_string(),
             "no schema given; pass -s FILE or pipe one on stdin"
         );
+    }
+
+    /// `one_of_each` has every variant. The match has no wildcard, so a new
+    /// variant fails to compile here until it is given a place, and `one_of_each`
+    /// must then hold it for the places to be all there.
+    #[test]
+    fn one_of_each_has_every_variant() {
+        let places: Vec<usize> = Error::one_of_each()
+            .iter()
+            .map(|error| match error {
+                Error::NoInput { .. } => 0,
+                Error::StdinTwice => 1,
+                Error::Read { .. } => 2,
+                Error::Parse { .. } => 3,
+                Error::BlankSchema { .. } => 4,
+                Error::InvalidTarget { .. } => 5,
+                Error::PathAsTarget { .. } => 6,
+                Error::UnknownType { .. } => 7,
+                Error::UnknownField { .. } => 8,
+                Error::NoFields { .. } => 9,
+                Error::FieldInSchemaFocus { .. } => 10,
+                Error::BuiltInScalar { .. } => 11,
+                Error::Write { .. } => 12,
+            })
+            .collect();
+        assert_eq!(places, (0..=12).collect::<Vec<_>>());
+    }
+
+    /// A usage error exits as clap's own do, which the skill and the help say.
+    #[test]
+    fn usage_errors_exit_as_clap_does() {
+        let clap = <crate::Args as clap::Parser>::try_parse_from(["bin", "--unknown"]);
+        let clap = clap.expect_err("an unknown flag is an error").exit_code();
+        for error in Error::one_of_each() {
+            assert_eq!(
+                i32::from(error.status()) == clap,
+                error.is_usage(),
+                "{error:?}"
+            );
+        }
     }
 
     #[test]

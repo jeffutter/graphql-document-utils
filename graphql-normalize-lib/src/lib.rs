@@ -1,3 +1,7 @@
+// The README is the crate's documentation, on crates.io and docs.rs alike, so
+// its example runs as a doc test.
+#![doc = include_str!("../README.md")]
+
 use graphql_parser::query::{self, Definition, Directive, Document, Selection, VariableDefinition};
 use std::fmt::Display;
 
@@ -58,41 +62,23 @@ impl<'a> Doc<'a> {
             }
         }
 
-        self.0.definitions.sort_by_key(|d| {
-            match d {
-                Definition::Operation(o) => match o {
-                    query::OperationDefinition::SelectionSet(_) => String::from(""),
-                    query::OperationDefinition::Query(q) => {
-                        let mut s = String::from("AAAA");
-                        if let Some(name) = q.name.clone() {
-                            s += &name;
-                        }
-                        s
-                    }
-                    query::OperationDefinition::Mutation(m) => {
-                        let mut s = String::from("BBBB");
-                        if let Some(name) = m.name.clone() {
-                            s += &name;
-                        }
-                        s
-                    }
-                    query::OperationDefinition::Subscription(sub) => {
-                        let mut s = String::from("CCCC");
-                        if let Some(name) = sub.name.clone() {
-                            s += &name;
-                        }
-                        s
-                    }
-                },
-                Definition::Fragment(frag) => {
-                    let mut s = String::from("ZZZZ");
-                    s += &frag.name;
-                    s
-                }
-            }
-            .to_lowercase()
+        // Ranked by kind, then by name, so no name can sort a definition into
+        // another kind's place. Anonymous operations have the empty name.
+        self.0.definitions.sort_by_key(|d| match d {
+            Definition::Operation(o) => match o {
+                query::OperationDefinition::SelectionSet(_) => (0, String::new()),
+                query::OperationDefinition::Query(q) => (0, lowercase(q.name.as_deref())),
+                query::OperationDefinition::Mutation(m) => (1, lowercase(m.name.as_deref())),
+                query::OperationDefinition::Subscription(s) => (2, lowercase(s.name.as_deref())),
+            },
+            Definition::Fragment(frag) => (3, frag.name.to_lowercase()),
         });
     }
+}
+
+/// `name` lowercased, or the empty string for none.
+fn lowercase(name: Option<&str>) -> String {
+    name.map(str::to_lowercase).unwrap_or_default()
 }
 
 fn normalize_selection_set(selections: &mut [Selection<String>]) {
@@ -113,25 +99,15 @@ fn normalize_selection_set(selections: &mut [Selection<String>]) {
         }
     }
 
-    selections.sort_by_key(|s| {
-        match s {
-            Selection::Field(f) => f.name.clone(),
-            Selection::FragmentSpread(fs) => {
-                let mut s = String::from("ZZZZ");
-                s += &fs.fragment_name;
-                s
-            }
-            Selection::InlineFragment(f) => {
-                let mut s = String::from("ZZZZZZZZ");
-                if let Some(tc) = &f.type_condition {
-                    match tc {
-                        query::TypeCondition::On(on) => s += on,
-                    }
-                }
-                s
-            }
-        }
-        .to_lowercase()
+    // Fields, then spreads, then inline fragments, each by name, ranked by
+    // kind first so no name can sort a selection into another kind's place.
+    selections.sort_by_key(|s| match s {
+        Selection::Field(f) => (0, f.name.to_lowercase()),
+        Selection::FragmentSpread(fs) => (1, fs.fragment_name.to_lowercase()),
+        Selection::InlineFragment(f) => match &f.type_condition {
+            Some(query::TypeCondition::On(on)) => (2, on.to_lowercase()),
+            None => (2, String::new()),
+        },
     });
 }
 
@@ -229,5 +205,90 @@ mod tests {
         "};
 
         assert_eq!(normalize(query).unwrap(), expected);
+    }
+
+    #[test]
+    fn orders_operations_by_type_then_name_then_fragments_by_name() {
+        let query = "fragment Z on T { a } fragment a on T { a } subscription S { a } mutation M { a } query b { a } query A { a }";
+
+        let expected = indoc! {"
+            query A {
+              a
+            }
+
+            query b {
+              a
+            }
+
+            mutation M {
+              a
+            }
+
+            subscription S {
+              a
+            }
+
+            fragment a on T {
+              a
+            }
+
+            fragment Z on T {
+              a
+            }
+        "};
+
+        assert_eq!(normalize(query).unwrap(), expected);
+    }
+
+    /// Fields by name, not alias, then spreads, then inline fragments by type
+    /// condition, whatever the names: a field named `zzzzb` once sorted after
+    /// the spreads, whose sort key was prefixed with `zzzz`.
+    #[test]
+    fn orders_fields_then_spreads_then_inline_fragments() {
+        let query = "{ ... on B { x } ...Y z: a ...x zzzzb ... on a { x } b }";
+
+        let expected = indoc! {"
+            {
+              z: a
+              b
+              zzzzb
+              ...x
+              ...Y
+              ... on a {
+                x
+              }
+              ... on B {
+                x
+              }
+            }
+        "};
+
+        assert_eq!(normalize(query).unwrap(), expected);
+    }
+
+    /// Names compare without regard to case, and ones that compare equal,
+    /// such as a field selected under two aliases, keep their order. Input
+    /// object fields are the exception: the parser keeps them in a `BTreeMap`,
+    /// which sorts them as written.
+    #[test]
+    fn sorts_arguments_and_directives_by_name_regardless_of_case() {
+        let query = "{ f(b: 1, C: 2, o: {b: 1, C: 2}) @b(y: 1, X: 2) @A y: g x: g }";
+
+        let expected = indoc! {"
+            {
+              f(b: 1, C: 2, o: {C: 2, b: 1}) @A @b(X: 2, y: 1)
+              y: g
+              x: g
+            }
+        "};
+
+        assert_eq!(normalize(query).unwrap(), expected);
+    }
+
+    #[test]
+    fn drops_comments() {
+        let query = "# a query\n{ a # the first\n b }";
+
+        assert_eq!(normalize(query).unwrap(), "{\n  a\n  b\n}\n");
     }
 }

@@ -1,0 +1,60 @@
+---
+source: tests/examples.rs
+expression: transcript(&examples)
+---
+$ graphql-document-utils schema prune -s schema.graphql -q query.graphql
+exit: 0
+stdout:
+type Query {
+  user(id: ID!): User
+  company: Company
+  search(filter: SearchFilter): [SearchResult]
+}
+
+type User {
+  name: String
+  email: String
+  profile: Profile
+}
+
+type Profile {
+  bio: String
+  avatar: Avatar
+}
+
+type Avatar {
+  url: String
+}
+
+type Company {
+  name: String
+  employees(first: Int): [User]
+}
+
+union SearchResult = User | Company
+
+input SearchFilter {
+  term: String
+}
+
+$ graphql-document-utils schema prune -s schema.graphql -q query.graphql > pruned.graphql
+exit: 0
+stdout: as for `graphql-document-utils schema prune -s schema.graphql -q query.graphql`
+
+$ cat queries/*.graphql | graphql-document-utils schema prune -s schema.graphql -q -
+exit: 0
+stdout:
+type Query {
+  user(id: ID!): User
+  company: Company
+}
+
+type User {
+  name: String
+  email: String
+}
+
+type Company {
+  name: String
+  employees(first: Int): [User]
+}

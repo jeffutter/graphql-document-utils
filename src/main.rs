@@ -1,3 +1,4 @@
+mod docs;
 mod error;
 mod focus;
 mod input;
@@ -5,6 +6,7 @@ mod prune;
 mod query_focus;
 mod query_strip;
 mod query_target;
+mod skill;
 mod sort;
 mod util;
 
@@ -21,138 +23,162 @@ use error::Error;
 use graphql_normalize::normalize;
 use input::{Input, Kind};
 
-/// What every command's `--help` ends with: the shape of stdout, where
-/// diagnostics go, and what the exit codes mean. `command` attaches it to each
-/// command, since clap does not pass `after_help` down to subcommands.
-///
-/// Hard-wrapped, since clap only wraps help text with its `wrap_help` feature.
-const OUTPUT_CONVENTIONS: &str = "\
-Output is a GraphQL document on stdout ending in one newline, or nothing at all
-when nothing survives. Errors, warnings, and notes go to stderr.
-
-Exit codes: 0 on success, including a valid target that matches nothing; 1 for
-a bad input (unreadable, invalid, unknown target); 2 for a usage error.";
-
-/// Utilities for processing GraphQL query and schema documents.
+/// The command line. Help text comes from `docs`, as it does for every
+/// command below.
 #[derive(Parser, Debug)]
-#[clap(version)]
+#[command(version, about = docs::ABOUT, after_help = docs::COMMON_TASKS)]
 struct Args {
+    /// `None` for the tool run on its own, which prints its help.
     #[command(subcommand)]
-    cmd: Commands,
+    cmd: Option<Commands>,
 }
 
+/// The nouns, and `skill`. Each noun takes an optional verb, as a noun run on
+/// its own prints its help, like the tool run on its own does.
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Operate on a query document
-    #[command(subcommand)]
-    Query(QueryCommands),
+    #[command(about = docs::QUERY_ABOUT)]
+    Query {
+        #[command(subcommand)]
+        verb: Option<QueryCommands>,
+    },
 
-    /// Operate on a schema document
-    #[command(subcommand)]
-    Schema(SchemaCommands),
+    #[command(about = docs::SCHEMA_ABOUT)]
+    Schema {
+        #[command(subcommand)]
+        verb: Option<SchemaCommands>,
+    },
+
+    #[command(
+        about = docs::SKILL_ABOUT,
+        long_about = docs::SKILL_LONG_ABOUT,
+        after_help = docs::SKILL_EXAMPLES,
+    )]
+    Skill,
 }
 
+/// The leaf commands and their arguments take their help text from `docs`,
+/// where it can be read on its own, rather than from doc comments.
 #[derive(Subcommand, Debug)]
 enum QueryCommands {
-    /// Format and sort a query into a canonical form
+    #[command(
+        about = docs::QUERY_NORMALIZE_ABOUT,
+        long_about = docs::QUERY_NORMALIZE_LONG_ABOUT,
+        after_help = docs::QUERY_NORMALIZE_EXAMPLES,
+    )]
     Normalize {
-        /// Query to read. Defaults to stdin, so `normalize` can be piped into.
-        #[arg(short, long, default_value = "-")]
+        #[arg(
+            short, long, default_value = "-", hide_default_value = true,
+            help = docs::QUERY_FROM_STDIN,
+        )]
         query: FileOrStdin,
 
-        /// Print the query on a single line with no unnecessary whitespace
-        #[arg(short, long, default_value_t = false)]
+        #[arg(short, long, default_value_t = false, help = docs::QUERY_NORMALIZE_MINIFY)]
         minify: bool,
     },
-    /// Strip a query down to the selections needed to reach the given targets
-    ///
-    /// Every path from an operation root to a matching type (`MyType`) or field
-    /// (`MyType.field`) is kept, along with the full selection at the match.
+    #[command(
+        about = docs::QUERY_FOCUS_ABOUT,
+        long_about = docs::QUERY_FOCUS_LONG_ABOUT,
+        after_help = docs::QUERY_FOCUS_EXAMPLES,
+    )]
     Focus {
-        /// Schema the query is written against, used to resolve field types
-        #[arg(short, long)]
+        #[arg(short, long, help = docs::QUERY_SCHEMA)]
         schema: PathBuf,
 
-        /// Query to read. Defaults to stdin, so `focus` can be piped into.
-        #[arg(short, long, default_value = "-")]
+        #[arg(
+            short, long, default_value = "-", hide_default_value = true,
+            help = docs::QUERY_FROM_STDIN,
+        )]
         query: FileOrStdin,
 
-        /// Types (`MyType`) or fields (`MyType.field`) to focus on
-        #[arg(required = true, num_args = 1.., value_name = "TYPE|TYPE.FIELD")]
+        #[arg(
+            required = true, num_args = 1.., value_name = "TYPE|TYPE.FIELD",
+            help = docs::QUERY_FOCUS_TARGETS,
+        )]
         targets: Vec<String>,
     },
-    /// Remove the given targets, and every reference to them, from a query
-    ///
-    /// The complement of `focus`: selections reaching a matching type
-    /// (`MyType`) or field (`MyType.field`) are dropped, and the rest of the
-    /// query is kept intact.
-    ///
-    /// Arguments and input fields typed with a matching type are removed too,
-    /// but a required one (non-null, no default) is never removed on its own,
-    /// so the output stays a valid query. A field that would lose a required
-    /// argument is removed instead, and a directive that would lose one is
-    /// dropped. A list element that cannot be kept is dropped from its list,
-    /// and a list emptied that way is removed by the same rule. Variable
-    /// default values are stripped the same way, and a variable whose default
-    /// loses a required input field is removed.
-    ///
-    /// Fields the schema does not define, like `__typename`, are never matched
-    /// against the targets, but they are removed if they pass a variable that
-    /// was removed.
+    #[command(
+        about = docs::QUERY_STRIP_ABOUT,
+        long_about = docs::QUERY_STRIP_LONG_ABOUT,
+        after_help = docs::QUERY_STRIP_EXAMPLES,
+    )]
     Strip {
-        /// Schema the query is written against, used to resolve field types
-        #[arg(short, long)]
+        #[arg(short, long, help = docs::QUERY_SCHEMA)]
         schema: PathBuf,
 
-        /// Query to read. Defaults to stdin, so `strip` can be piped into.
-        #[arg(short, long, default_value = "-")]
+        #[arg(
+            short, long, default_value = "-", hide_default_value = true,
+            help = docs::QUERY_FROM_STDIN,
+        )]
         query: FileOrStdin,
 
-        /// Types (`MyType`) or fields (`MyType.field`) to strip
-        #[arg(required = true, num_args = 1.., value_name = "TYPE|TYPE.FIELD")]
+        #[arg(
+            required = true, num_args = 1.., value_name = "TYPE|TYPE.FIELD",
+            help = docs::QUERY_STRIP_TARGETS,
+        )]
         targets: Vec<String>,
     },
 }
 
+/// The leaf commands and their arguments take their help text from `docs`,
+/// where it can be read on its own, rather than from doc comments.
 #[derive(Subcommand, Debug)]
 enum SchemaCommands {
-    /// Reformat a schema, leaving its contents unchanged
+    #[command(
+        about = docs::SCHEMA_FORMAT_ABOUT,
+        long_about = docs::SCHEMA_FORMAT_LONG_ABOUT,
+        after_help = docs::SCHEMA_FORMAT_EXAMPLES,
+    )]
     Format {
-        /// Schema to read. Defaults to stdin, so `format` can be piped into.
-        #[arg(short, long, default_value = "-")]
+        #[arg(
+            short, long, default_value = "-", hide_default_value = true,
+            help = docs::SCHEMA_FROM_STDIN,
+        )]
         schema: FileOrStdin,
     },
-    /// Reduce a schema to the given types and everything they depend on
+    #[command(
+        about = docs::SCHEMA_FOCUS_ABOUT,
+        long_about = docs::SCHEMA_FOCUS_LONG_ABOUT,
+        after_help = docs::SCHEMA_FOCUS_EXAMPLES,
+    )]
     Focus {
-        /// Schema to read. Defaults to stdin, so `focus` can be piped into.
-        #[arg(short, long, default_value = "-")]
+        #[arg(
+            short, long, default_value = "-", hide_default_value = true,
+            help = docs::SCHEMA_FROM_STDIN,
+        )]
         schema: FileOrStdin,
 
-        /// Types to keep, along with all of their descendants
-        #[arg(required = true, num_args = 1.., value_name = "TYPE")]
+        #[arg(
+            required = true, num_args = 1.., value_name = "TYPE",
+            help = docs::SCHEMA_FOCUS_TYPES,
+        )]
         types: Vec<String>,
     },
-    /// Remove the types and fields a query does not use from a schema
+    #[command(
+        about = docs::SCHEMA_PRUNE_ABOUT,
+        long_about = docs::SCHEMA_PRUNE_LONG_ABOUT,
+        after_help = docs::SCHEMA_PRUNE_EXAMPLES,
+    )]
     Prune {
-        /// Schema to read. Defaults to stdin, so `prune` can be piped into.
-        #[arg(short, long, default_value = "-")]
+        #[arg(
+            short, long, default_value = "-", hide_default_value = true,
+            help = docs::SCHEMA_FROM_STDIN,
+        )]
         schema: FileOrStdin,
 
-        /// Query whose usage decides what the schema keeps. `-` reads it from
-        /// stdin, in which case the schema has to be a file.
-        #[arg(short, long)]
+        #[arg(short, long, help = docs::SCHEMA_PRUNE_QUERY)]
         query: FileOrStdin,
     },
-    /// Sort schema definitions by category, then alphabetically by name
-    ///
-    /// Categories come in this order: the schema definition, directives, types,
-    /// then extensions. All type kinds (object, interface, union, enum, input,
-    /// scalar) are interleaved alphabetically within types. Extensions are
-    /// sorted by the name of the type they extend, and several extensions of
-    /// one type keep their source order. Fields keep their source order.
+    #[command(
+        about = docs::SCHEMA_SORT_ABOUT,
+        long_about = docs::SCHEMA_SORT_LONG_ABOUT,
+        after_help = docs::SCHEMA_SORT_EXAMPLES,
+    )]
     Sort {
-        /// Schema to read. Defaults to stdin, so `sort` can be piped into.
-        #[arg(short, long, default_value = "-")]
+        #[arg(
+            short, long, default_value = "-", hide_default_value = true,
+            help = docs::SCHEMA_FROM_STDIN,
+        )]
         schema: FileOrStdin,
     },
 }
@@ -163,7 +189,7 @@ fn main() -> ExitCode {
         .unwrap_or_else(|e| e.format(&mut command).exit());
 
     let mut warnings = Vec::new();
-    let result = run(args, &mut warnings);
+    let result = run(args, &mut command, &mut warnings);
 
     // Warnings come first, and on failure too, since a problem they describe
     // can be what the command failed on, as when a target names a field only
@@ -180,25 +206,57 @@ fn main() -> ExitCode {
     }
 }
 
-/// The clap command for `Args`, with `OUTPUT_CONVENTIONS` after the help of it
-/// and every subcommand below it. Applied here rather than per variant, so a
-/// new subcommand gets it without having to remember to.
+/// The clap command for `Args`, with `docs::OUTPUT_CONVENTIONS` ending the help
+/// of it and of every noun and command below one, after the examples a leaf
+/// has, or the common tasks at the top. Applied here rather than per variant,
+/// since clap does not pass `after_help` down to subcommands, so a new
+/// subcommand gets it without having to remember to. Both go in `after_help`,
+/// which `-h` shows as well as `--help`.
+///
+/// A command outside the nouns, `skill`, does not get them: it prints a guide
+/// to the tool rather than a GraphQL document, and reads nothing.
 fn command() -> clap::Command {
     fn with_conventions(command: clap::Command) -> clap::Command {
-        command
-            .mut_subcommands(with_conventions)
-            .after_help(OUTPUT_CONVENTIONS)
+        let after_help = match command.get_after_help() {
+            Some(own) => format!("{own}\n\n{}", docs::OUTPUT_CONVENTIONS),
+            None => docs::OUTPUT_CONVENTIONS.to_string(),
+        };
+        command.after_help(after_help)
     }
-    with_conventions(Args::command())
+    fn with_conventions_throughout(command: clap::Command) -> clap::Command {
+        with_conventions(command).mut_subcommands(with_conventions_throughout)
+    }
+    with_conventions(Args::command()).mut_subcommands(|command| {
+        if command.has_subcommands() {
+            with_conventions_throughout(command)
+        } else {
+            command
+        }
+    })
 }
 
 /// Runs the command `args` names, returning what it produced for `main` to
 /// print. Warnings about the input documents, such as a name defined twice,
 /// are added to `warnings` as each is parsed, so they reach stderr even when
 /// the command then fails.
-fn run(args: Args, warnings: &mut Vec<String>) -> Result<Output, Error> {
+///
+/// The tool or a noun run without a subcommand is asking what it can do, not
+/// making a mistake, so it produces the help `-h` would print, taken from
+/// `command`, the one `main` parsed with. As output it goes to stdout, exit 0,
+/// through `emit` like any document, rather than clap's usage error on stderr.
+fn run(
+    args: Args,
+    command: &mut clap::Command,
+    warnings: &mut Vec<String>,
+) -> Result<Output, Error> {
     let output = match args.cmd {
-        Commands::Query(query_commands) => match query_commands {
+        None => help(command, &[]).into(),
+        Some(Commands::Query { verb: None }) => help(command, &["query"]).into(),
+        Some(Commands::Schema { verb: None }) => help(command, &["schema"]).into(),
+        Some(Commands::Skill) => skill::render().into(),
+        Some(Commands::Query {
+            verb: Some(query_commands),
+        }) => match query_commands {
             QueryCommands::Normalize { query, minify } => {
                 let query = Input::read(query, Kind::Query)?;
 
@@ -251,7 +309,9 @@ fn run(args: Args, warnings: &mut Vec<String>) -> Result<Output, Error> {
                 )?
             }
         },
-        Commands::Schema(schema_commands) => match schema_commands {
+        Some(Commands::Schema {
+            verb: Some(schema_commands),
+        }) => match schema_commands {
             SchemaCommands::Format { schema } => {
                 let schema = Input::read(schema, Kind::Schema)?;
                 // A blank schema has nothing to format, so it passes through
@@ -283,6 +343,22 @@ fn run(args: Args, warnings: &mut Vec<String>) -> Result<Output, Error> {
     };
 
     Ok(output)
+}
+
+/// The help `-h` prints for the command `path` names under `command`, the root
+/// when `path` is empty. `--help` prints the same for the root and the nouns,
+/// which have no long help.
+fn help(command: &mut clap::Command, path: &[&str]) -> String {
+    // Parsing gives only the root, and the subcommand it enters, a usage line
+    // naming the full command (`graphql-document-utils query`); building
+    // gives every subcommand one, as `-h` would show.
+    command.build();
+    let command = path.iter().fold(command, |command, name| {
+        command
+            .find_subcommand_mut(name)
+            .expect("`path` names subcommands")
+    });
+    command.render_help().to_string()
 }
 
 /// What a command produces: the document for stdout, and notes for stderr,
@@ -350,4 +426,14 @@ fn emit(output: Output) -> Result<(), Error> {
 /// nowhere left to report that, so the line is dropped.
 fn diagnose(label: &str, message: impl fmt::Display) {
     let _ = writeln!(io::stderr().lock(), "{label}: {message}");
+}
+
+#[cfg(test)]
+mod tests {
+    /// clap's own checks of the command definition, such as conflicting flag
+    /// names, which otherwise surface only when the affected command runs.
+    #[test]
+    fn command_is_well_formed() {
+        super::command().debug_assert();
+    }
 }

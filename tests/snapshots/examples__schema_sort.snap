@@ -1,0 +1,73 @@
+---
+source: tests/examples.rs
+expression: transcript(&examples)
+---
+$ graphql-document-utils schema sort -s schema.graphql
+exit: 0
+stdout:
+type Avatar {
+  url: String
+}
+
+type Company implements Node {
+  id: ID!
+  name: String
+  employees(first: Int): [User]
+}
+
+"Anything with a global ID."
+interface Node {
+  id: ID!
+}
+
+type Profile {
+  bio: String
+  avatar: Avatar
+}
+
+type Query {
+  user(id: ID!): User
+  company: Company
+  search(filter: SearchFilter): [SearchResult]
+}
+
+input SearchFilter {
+  term: String
+}
+
+union SearchResult = User | Company
+
+type User implements Node {
+  id: ID!
+  name: String
+  email: String
+  profile: Profile
+}
+
+$ graphql-document-utils schema sort -s schema.graphql > sorted.graphql
+exit: 0
+stdout: as for `graphql-document-utils schema sort -s schema.graphql`
+
+$ graphql-document-utils schema focus -s schema.graphql User | graphql-document-utils schema sort
+exit: 0 | 0
+stdout:
+type Avatar {
+  url: String
+}
+
+"Anything with a global ID."
+interface Node {
+  id: ID!
+}
+
+type Profile {
+  bio: String
+  avatar: Avatar
+}
+
+type User implements Node {
+  id: ID!
+  name: String
+  email: String
+  profile: Profile
+}

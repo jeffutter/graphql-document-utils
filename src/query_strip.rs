@@ -2311,4 +2311,108 @@ mod tests {
             ["type `User` is defined more than once in (stdin) (at 5:1, 9:1); only the first is used"]
         );
     }
+
+    /// A schema with a union, and an interface fields are selected through.
+    const SUBTYPES: &str = indoc! {"
+        type Query {
+          node: Person
+          user: User
+          search: [SearchResult]
+        }
+
+        interface Person {
+          name: String
+        }
+
+        type User implements Person {
+          name: String
+          id: ID
+        }
+
+        type Bot {
+          id: ID
+        }
+
+        union SearchResult = User | Bot
+    "};
+
+    #[test]
+    fn strips_every_member_of_a_targeted_union() {
+        let query = indoc! {"
+            {
+              user {
+                id
+              }
+              node {
+                name
+              }
+              search {
+                ... on Bot {
+                  id
+                }
+              }
+            }
+        "};
+
+        assert_eq!(
+            stripped(SUBTYPES, query, &["SearchResult"]),
+            indoc! {"
+                {
+                  node {
+                    name
+                  }
+                }
+            "}
+        );
+    }
+
+    #[test]
+    fn an_emptied_inline_fragment_goes_and_its_parent_stays() {
+        let query = indoc! {"
+            {
+              node {
+                name
+                ... on User {
+                  id
+                }
+              }
+            }
+        "};
+
+        assert_eq!(
+            stripped(SUBTYPES, query, &["User.id"]),
+            indoc! {"
+                {
+                  node {
+                    name
+                  }
+                }
+            "}
+        );
+    }
+
+    /// `__typename` returns a `String`, but the schema does not define it, so
+    /// a `String` target does not match it.
+    #[test]
+    fn never_matches_fields_the_schema_does_not_define() {
+        let query = indoc! {"
+            {
+              user {
+                __typename
+                name
+              }
+            }
+        "};
+
+        assert_eq!(
+            stripped(SUBTYPES, query, &["String"]),
+            indoc! {"
+                {
+                  user {
+                    __typename
+                  }
+                }
+            "}
+        );
+    }
 }

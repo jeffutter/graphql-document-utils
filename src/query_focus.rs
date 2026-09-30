@@ -1233,4 +1233,113 @@ mod tests {
             "}
         );
     }
+
+    /// A schema with a union, and an interface fields are selected through.
+    const SUBTYPES: &str = indoc! {"
+        type Query {
+          node: Person
+          user: User
+          search: [SearchResult]
+        }
+
+        interface Person {
+          name: String
+        }
+
+        type User implements Person {
+          name: String
+          id: ID
+        }
+
+        type Bot {
+          id: ID
+        }
+
+        union SearchResult = User | Bot
+    "};
+
+    #[test]
+    fn a_union_target_matches_its_members() {
+        let query = indoc! {"
+            {
+              user {
+                id
+              }
+              node {
+                name
+              }
+              search {
+                ... on Bot {
+                  id
+                }
+              }
+            }
+        "};
+
+        assert_eq!(
+            focused(SUBTYPES, query, &["SearchResult"]),
+            indoc! {"
+                {
+                  user {
+                    id
+                  }
+                  search {
+                    ... on Bot {
+                      id
+                    }
+                  }
+                }
+            "}
+        );
+    }
+
+    #[test]
+    fn a_field_target_on_an_implementor_matches_it_selected_on_the_interface() {
+        let query = indoc! {"
+            {
+              node {
+                name
+              }
+              user {
+                id
+              }
+            }
+        "};
+
+        assert_eq!(
+            focused(SUBTYPES, query, &["User.name"]),
+            indoc! {"
+                {
+                  node {
+                    name
+                  }
+                }
+            "}
+        );
+    }
+
+    /// `__typename` returns a `String`, but the schema does not define it, so
+    /// a `String` target does not match it.
+    #[test]
+    fn never_matches_fields_the_schema_does_not_define() {
+        let query = indoc! {"
+            {
+              user {
+                __typename
+                name
+              }
+            }
+        "};
+
+        assert_eq!(
+            focused(SUBTYPES, query, &["String"]),
+            indoc! {"
+                {
+                  user {
+                    name
+                  }
+                }
+            "}
+        );
+    }
 }

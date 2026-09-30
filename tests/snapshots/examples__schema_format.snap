@@ -1,0 +1,53 @@
+---
+source: tests/examples.rs
+expression: transcript(&examples)
+---
+$ graphql-document-utils schema format -s schema.graphql
+exit: 0
+stdout:
+type Query {
+  user(id: ID!): User
+  company: Company
+  search(filter: SearchFilter): [SearchResult]
+}
+
+"Anything with a global ID."
+interface Node {
+  id: ID!
+}
+
+type User implements Node {
+  id: ID!
+  name: String
+  email: String
+  profile: Profile
+}
+
+type Profile {
+  bio: String
+  avatar: Avatar
+}
+
+type Avatar {
+  url: String
+}
+
+type Company implements Node {
+  id: ID!
+  name: String
+  employees(first: Int): [User]
+}
+
+union SearchResult = User | Company
+
+input SearchFilter {
+  term: String
+}
+
+$ graphql-document-utils schema format -s schema.graphql > formatted.graphql
+exit: 0
+stdout: as for `graphql-document-utils schema format -s schema.graphql`
+
+$ cat schema.graphql | graphql-document-utils schema format
+exit: 0
+stdout: as for `graphql-document-utils schema format -s schema.graphql`

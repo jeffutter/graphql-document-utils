@@ -1,0 +1,41 @@
+---
+source: tests/examples.rs
+expression: transcript(&examples)
+---
+$ graphql-document-utils query normalize -q query.graphql
+exit: 0
+stdout:
+query GetUser($filter: SearchFilter, $first: Int, $id: ID!) {
+  company {
+    employees(first: $first) {
+      name
+    }
+  }
+  search(filter: $filter) {
+    __typename
+    ... on Company {
+      name
+    }
+    ... on User {
+      email
+    }
+  }
+  user(id: $id) {
+    name
+    profile {
+      avatar {
+        url
+      }
+      bio
+    }
+  }
+}
+
+$ graphql-document-utils query normalize -q query.graphql --minify
+exit: 0
+stdout:
+query GetUser($filter:SearchFilter$first:Int$id:ID!){company{employees(first:$first){name}}search(filter:$filter){__typename...on Company{name}...on User{email}}user(id:$id){name profile{avatar{url}bio}}}
+
+$ cat query.graphql | graphql-document-utils query normalize -m
+exit: 0
+stdout: as for `graphql-document-utils query normalize -q query.graphql --minify`

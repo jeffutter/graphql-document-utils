@@ -1,0 +1,39 @@
+type Query {
+  user(id: ID!): User
+  company: Company
+  search(filter: SearchFilter): [SearchResult]
+}
+
+"Anything with a global ID."
+interface Node {
+  id: ID!
+}
+
+type User implements Node {
+  id: ID!
+  name: String
+  email: String
+  profile: Profile
+}
+
+type Profile {
+  bio: String
+  avatar: Avatar
+}
+
+type Avatar {
+  url: String
+}
+
+type Company implements Node {
+  id: ID!
+  name: String
+  employees(first: Int): [User]
+}
+
+# What `search` can find.
+union SearchResult = User | Company
+
+input SearchFilter {
+  term: String
+}
