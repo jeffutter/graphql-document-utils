@@ -74,7 +74,11 @@ pub fn process(schema: &str, query: &str, targets: &[&str]) -> String {
                     op,
                     selection_set,
                     directives.to_vec(),
-                    &used_variables,
+                    util::operation_variable_definitions(op)
+                        .iter()
+                        .filter(|var| used_variables.contains(&var.name))
+                        .cloned()
+                        .collect(),
                 )))
             }
             // A fragment spread from inside a verbatim-retained selection is
@@ -925,6 +929,71 @@ mod tests {
                   }
                   company {
                     name
+                  }
+                }
+            "}
+        );
+    }
+
+    #[test]
+    fn resolves_fields_and_interfaces_added_by_extensions() {
+        let schema = indoc! {"
+            type Query {
+              me: User
+            }
+
+            extend type Query {
+              bots: [Bot]
+            }
+
+            type User {
+              id: ID
+            }
+
+            type Bot {
+              id: ID
+            }
+
+            interface Owned {
+              owner: User
+            }
+
+            extend type Bot implements Owned {
+              owner: User
+            }
+        "};
+        let query = indoc! {"
+            {
+              bots {
+                id
+              }
+              me {
+                id
+              }
+            }
+        "};
+
+        // `bots` exists only in an extension.
+        let result = query_focus::process(schema, query, &["Bot"]);
+        assert_eq!(
+            result,
+            indoc! {"
+                {
+                  bots {
+                    id
+                  }
+                }
+            "}
+        );
+
+        // `Bot` implements `Owned` only through an extension.
+        let result = query_focus::process(schema, query, &["Owned"]);
+        assert_eq!(
+            result,
+            indoc! {"
+                {
+                  bots {
+                    id
                   }
                 }
             "}

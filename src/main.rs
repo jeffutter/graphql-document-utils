@@ -66,6 +66,19 @@ enum QueryCommands {
     /// The complement of `focus`: selections reaching a matching type
     /// (`MyType`) or field (`MyType.field`) are dropped, and the rest of the
     /// query is kept intact.
+    ///
+    /// Arguments and input fields typed with a matching type are removed too,
+    /// but a required one (non-null, no default) is never removed on its own,
+    /// so the output stays a valid query. A field that would lose a required
+    /// argument is removed instead, and a directive that would lose one is
+    /// dropped. A list element that cannot be kept is dropped from its list,
+    /// and a list emptied that way is removed by the same rule. Variable
+    /// default values are stripped the same way, and a variable whose default
+    /// loses a required input field is removed.
+    ///
+    /// Fields the schema does not define, like `__typename`, are never matched
+    /// against the targets, but they are removed if they pass a variable that
+    /// was removed.
     Strip {
         /// Schema the query is written against, used to resolve field types
         #[arg(short, long)]
@@ -110,6 +123,12 @@ enum SchemaCommands {
         query: PathBuf,
     },
     /// Sort schema definitions by category, then alphabetically by name
+    ///
+    /// Categories come in this order: the schema definition, directives, types,
+    /// then extensions. All type kinds (object, interface, union, enum, input,
+    /// scalar) are interleaved alphabetically within types. Extensions are
+    /// sorted by the name of the type they extend, and several extensions of
+    /// one type keep their source order. Fields keep their source order.
     Sort {
         /// Schema to read
         #[arg(short, long)]

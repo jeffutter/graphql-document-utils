@@ -45,7 +45,7 @@ Download pre-built binaries from the [GitHub releases page](https://github.com/j
 Clone the repository and build locally:
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/jeffutter/graphql-document-utils.git
 cd graphql-document-utils
 cargo build --release
 ```
@@ -54,7 +54,7 @@ The binary will be available at `target/release/graphql-document-utils`.
 
 ### Development Setup
 
-1. Ensure you have Rust installed (1.70.0 or later recommended)
+1. Ensure you have Rust installed (1.74 or later, the minimum `clap` requires)
 2. Clone the repository
 3. Run `cargo build` to build the project
 4. Run `cargo test` to run the test suite
@@ -188,6 +188,10 @@ The result stays rooted at the same entrypoint operations as the original, and:
   fragments spread inside a match are kept verbatim.
 - **Unreferenced variable definitions and whole operations are dropped.** If no
   operation reaches a target, the output is empty.
+- **Type extensions count.** Fields, arguments, and interfaces an `extend` block
+  adds are resolved like the base type's, even when the base type is defined in
+  another document (as in a federation subgraph that only writes
+  `extend type Query`).
 
 #### Strip Types or Fields Out of a Query
 
@@ -248,18 +252,40 @@ Specifically:
 - **Subtypes count**, exactly as in `focus`. Stripping an interface or union also
   strips its implementors and members, and `Person.name` strips a `name` selected
   on `User` as well as the other way round.
+- **Type extensions count**, exactly as in `focus`.
 - **Input positions are stripped too.** Arguments typed with a stripped type are
-  deleted, along with the variable definitions that fed them, and any directive
-  that depended on one of those variables.
+  deleted, along with the variable definitions that fed them. Object literals are
+  stripped field by field, so `filter: { term: "x", status: ACTIVE }` loses just
+  `status` when `Status` is stripped, if `status` is optional.
+- **Required inputs are never removed on their own**, so the output stays a
+  valid query. An input is required when it is non-null with no schema default.
+  A field that would lose a required argument is removed instead (it cannot be
+  called without it), and the removal cascades from there. A directive that
+  would lose a required argument is dropped. A required input field that has to
+  go takes its object literal, and the literal's own position then decides by
+  the same rule. A list element that cannot stay is dropped and the rest keep
+  their order, so `filters: [{ status: ACTIVE }, { term: "x" }]` becomes
+  `filters: [{ term: "x" }]` when `Status` is stripped and `status` is required.
+  A list emptied that way goes too, by the same rule, while one written as `[]`
+  is left alone. Inputs the schema does not describe, including the arguments
+  of the undeclared built-ins `@include` and `@skip`, count as required.
+- **Variable defaults are stripped too**, against the variable's declared type,
+  so `$f: SearchFilter = { term: "x", sort: DATE }` loses `sort` when `Sort` is
+  stripped. A default that loses a required input field cannot stay, and
+  dropping just the default would change what callers get when they omit the
+  variable (a non-null one would become required, a nullable one null). So the
+  variable is removed instead, exactly as if its type had been stripped, and
+  every usage goes by the rules above.
+- **Fields the schema does not define**, such as `__typename`, are never matched
+  against the targets, and neither is anything they select until a type
+  condition names a type again. Their arguments and directives are still
+  stripped, so a field the schema does not know goes if it passes a removed
+  variable, and no removed variable or fragment is left referenced.
 - **Fragments are reduced in place.** A fragment defined on a stripped type is
   dropped whatever it selects; one that empties out, or that no surviving
   operation spreads any more, is dropped as well.
 - **Operations left with nothing are dropped.** If everything is stripped, the
   output is empty; if nothing matches, the query comes back unchanged.
-
-Note that `strip` does not check whether the result still satisfies the schema's
-required arguments — removing an argument that was declared non-null will produce
-a query the server rejects.
 
 ### Schema Commands
 
@@ -273,26 +299,54 @@ graphql-document-utils schema format --schema schema.graphql
 
 #### Focus on Specific Types
 
-Extract only the descendants of specified root types, creating a focused subset of your schema:
+Extract only the descendants of specified root types, creating a focused subset of your schema.
+The types are positional arguments, not a flag:
 
 ```bash
-graphql-document-utils schema focus --schema schema.graphql --type User
+graphql-document-utils schema focus --schema schema.graphql User
 ```
 
 Multiple types:
 
 ```bash
-graphql-document-utils schema focus --schema schema.graphql --type User Company Post
+graphql-document-utils schema focus --schema schema.graphql User Company Post
 ```
 
 **Example:**
 ```graphql
 # Input schema with User, Company, Post, Comment types
 # Focus on User type
-graphql-document-utils schema focus --schema schema.graphql --type User
+graphql-document-utils schema focus --schema schema.graphql User
 
 # Output: Only User and its dependent types (Profile, Post, etc.)
 ```
+
+The output is self-contained: every type and directive it names is defined in
+it.
+
+- **Descendants of each given type are kept whole**, recursively: the types its
+  fields return, a union's members, and every type implementing an interface it
+  reaches.
+- **Any type the schema defines can be focused on**, including a scalar, enum,
+  or input type that nothing references.
+- **Dependencies of what is kept are kept too**, but not as roots: argument
+  types and the input objects, scalars, and enums they reach, the interfaces a
+  kept type implements, and the definitions of directives a kept definition
+  uses. An interface kept only because a type implements it does not bring its
+  other implementors.
+- **The query root type is always kept**, since a schema without one is
+  invalid. When the query never uses it, as in a document of only mutations or
+  subscriptions, it keeps its smallest valid form (one field, chosen as below),
+  and whatever that field returns keeps its smallest form too. The root is
+  `schema { query: ... }` when given, otherwise `Query`, and one defined only by
+  `extend type Query`, as in a federation subgraph, stays an `extend` block. A
+  schema with no query root type is left without one.
+- **The `schema` definition keeps only the root operation types that survive**,
+  so it always keeps its `query` entry, and is dropped when none do.
+- **`extend` blocks are part of their type.** Their fields, union members, and
+  `implements` clauses are walked like the base definition's, and a kept type
+  keeps its extensions whole and in place. An extension whose base type the
+  document does not define stands in as the definition.
 
 #### Prune Unused Types and Fields
 
@@ -309,6 +363,53 @@ graphql-document-utils schema prune --schema schema.graphql --query query.graphq
 # Result: User type will only contain name and email fields
 ```
 
+The output is self-contained: every type and directive it names is defined in
+it.
+
+- **Objects and interfaces keep only the fields the query selects**, on the type
+  itself or on an interface it implements. Every object implementing an
+  interface the query selects from is kept with that interface's fields, so
+  every kept implementor still satisfies the interfaces it keeps.
+- **Everything a kept field depends on is kept**: its return type, argument
+  types, input objects reached through those arguments (whole and recursively),
+  scalars, enums, and the interfaces a kept type implements.
+- **Unions keep only the members the query selects through.**
+- **Directive definitions are kept only when used**, by a kept definition or by
+  the query itself.
+- **The query root type is always kept**, since a schema without one is
+  invalid. When the query never uses it, as in a document of only mutations or
+  subscriptions, it keeps its smallest valid form (one field, chosen as below),
+  and whatever that field returns keeps its smallest form too. The root is
+  `schema { query: ... }` when given, otherwise `Query`, and one defined only by
+  `extend type Query`, as in a federation subgraph, stays an `extend` block. A
+  schema with no query root type is left without one.
+- **The `schema` definition keeps only the root operation types that survive**,
+  so it always keeps its `query` entry, and is dropped when none do.
+- **A definition pruned down to empty is removed**, along with every reference
+  to it. An interface none of whose fields the query selects is dropped, and
+  kept types stop implementing it. A union left with no members, or an object
+  left with no fields, is dropped too, and so are fields returning it and union
+  memberships naming it, which can empty further types in turn. Definitions
+  that were already empty in the source are left as written.
+- **A type a kept field returns is never removed**, since the query or an
+  implementor would no longer be valid against the output. That includes the
+  narrower type an implementor declares for an interface field, as in
+  `type Holder implements HasResult { result: User }` for the interface's
+  `result: SearchResult`, which is kept (and stays a member of `SearchResult`)
+  even when the query never enters `User`. When the query selects nothing on
+  such a type, or nothing but `__typename`, as in `search { __typename }` or
+  `... on Node { __typename }`, it keeps its smallest valid form: an object or
+  interface keeps one field (preferring one that returns a scalar or enum and
+  takes no arguments), and a union keeps its first member, which keeps one
+  field of its own.
+- **`extend` blocks are pruned like the type they extend.** Their fields,
+  interfaces, and union members count as the type's, each block keeps only its
+  own share of what survives, and a block left with nothing is dropped. When the
+  base definition is left with no fields, the first surviving extension takes
+  its place as the definition, with the base's description, interfaces, and
+  directives, so `type Query` followed by `extend type Query { bots: [Bot] }`
+  comes out as `type Query { bots: [Bot] }`.
+
 #### Sort Schema Definitions
 
 Organize schema definitions alphabetically by category and name:
@@ -318,10 +419,14 @@ graphql-document-utils schema sort --schema schema.graphql
 ```
 
 **Categories sorted in order:**
-1. Schema definitions
-2. Directive definitions
-3. Type definitions (alphabetically)
-4. Type extensions (alphabetically)
+1. Schema definition
+2. Directive definitions (alphabetically by name)
+3. Type definitions (alphabetically by name, with all kinds - object,
+   interface, union, enum, input, scalar - interleaved rather than grouped)
+4. Type extensions (alphabetically by the name of the type they extend;
+   several extensions of one type keep their source order)
+
+Fields, arguments, enum values, and union members keep their source order.
 
 ### Input/Output Options
 
@@ -376,12 +481,17 @@ cargo clippy                   # Run linter
 
 ### Focus Feature
 - Uses `petgraph` to build a dependency graph of GraphQL types
+- Merges `extend` blocks into their base types (`util::merged_type_definitions`)
+  before building the graph, so what an extension adds is walked too
 - Performs depth-first search (DFS) traversal from specified root types
 - Handles complex relationships including interfaces, unions, and nested types
-- Preserves schema validity by including all necessary dependencies
+- Preserves schema validity by including all necessary dependencies (argument
+  and input types, implemented interfaces, directive definitions, the trimmed
+  `schema` definition) through `util::retain_with_dependencies`
 
 ### Query Focus Feature
-- Resolves each query selection against the schema to know the type it lands on
+- Resolves each query selection against the schema to know the type it lands on,
+  with `extend` blocks merged into their base types
 - Retains every path from an operation root to a matching type or field
 - Prunes fragment definitions in place rather than inlining them, tracking whether
   each fragment was kept whole or reduced
@@ -395,6 +505,14 @@ cargo clippy                   # Run linter
   inline fragment, or whole operation with it
 - Strips input-position references too, deleting arguments typed with a stripped
   type and the variable definitions behind them
+- Never removes a required input on its own: a field losing a required argument
+  is removed instead, and a directive losing one is dropped
+- Drops only the list elements that cannot be kept, in order; a list emptied
+  that way is removed by the same rules, while a `[]` written in the query stays
+- Strips variable default values too; a variable whose default loses a required
+  input field is removed along with its usages, as if its type were stripped
+- Cleans removed variables and fragments out of fields the schema does not
+  define, without matching them against the targets
 - Recomputes fragment reachability against the surviving tree, so a fragment
   reduced on a branch that was later dropped is not emitted
 
@@ -403,12 +521,29 @@ cargo clippy                   # Run linter
 - Supports fragments, inline fragments, and interface implementations
 - Maintains schema structure while removing unused elements
 - Handles complex scenarios like union types and interface implementations
+- Keeps every dependency of what survives (argument and input types, scalars,
+  enums, implemented interfaces, union members, directive definitions) through
+  `util::retain_with_dependencies`, so the output never names a dropped type
+- Decides usage against each type with its `extend` blocks merged in, then emits
+  the base definition and each extension trimmed to its own surviving members
+- Removes any definition trimmed down to empty, and every reference to it,
+  except types a kept field returns (including the narrower type an implementor
+  declares for an interface field), which keep their smallest valid form so the
+  query and every kept implementor stay valid against the output
+- Promotes the first surviving extension to the definition when the base is
+  trimmed to empty
+- Always keeps the query root type, in its smallest valid form when the query
+  never uses it, so a query document of only mutations or subscriptions still
+  prunes to a valid schema
 
 ### Sort Feature
 - Categorizes schema definitions (schema, directives, types, extensions)
-- Sorts alphabetically within each category
+- Sorts alphabetically by name within each category, interleaving all type
+  kinds within types and keying each extension by the type it extends
+- Uses a stable sort, so several extensions of one type keep their source order
+- Leaves the members of each definition (fields, enum values, union members) in
+  source order
 - Uses index-based approach to work efficiently with the `graphql-parser` crate
-- Preserves comments and formatting where possible
 
 ### Dependencies
 
@@ -422,26 +557,38 @@ cargo clippy                   # Run linter
 ### Complete Workflow Example
 
 ```bash
-# 1. Start with a large schema and queries
-# 2. Focus on specific types you care about
-graphql-document-utils schema focus --schema large-schema.graphql --type User Product > focused-schema.graphql
+# 1. Start with a large schema and the queries your app sends
+# 2. Prune the types and fields those queries do not use
+graphql-document-utils schema prune --schema large-schema.graphql --query app-queries.graphql > pruned-schema.graphql
 
-# 3. Prune unused fields based on your actual queries
-graphql-document-utils schema prune --schema focused-schema.graphql --query app-queries.graphql > pruned-schema.graphql
+# 3. Focus on the types you care about, along with everything they depend on
+graphql-document-utils schema focus --schema pruned-schema.graphql User Product > focused-schema.graphql
 
-# 4. Sort and format the final schema
-graphql-document-utils schema sort --schema pruned-schema.graphql | graphql-document-utils schema format > final-schema.graphql
+# 4. Sort the final schema (sort output is already formatted, so no `schema format` step is needed)
+graphql-document-utils schema sort --schema focused-schema.graphql > final-schema.graphql
 ```
+
+Prune before focus: focusing on `User Product` first drops `Query`, leaving prune
+nothing to match the queries against. Sort can go first or last, since prune and
+focus both keep definitions in source order.
 
 ### Library Usage
 
 The normalization functionality can be used as a library:
 
 ```rust
-use graphql_normalize::normalize_query;
+use graphql_normalize::normalize;
 
-let normalized = normalize_query(query_string, false)?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `normalize(&str) -> Result<String, Box<dyn std::error::Error>>`
+    let normalized = normalize("query { user { name email } }")?;
+    print!("{normalized}");
+    Ok(())
+}
 ```
+
+The library only normalizes. Minification (`--minify`) is done by the CLI with
+`graphql_parser::minify_query`.
 
 ## Contributing
 
@@ -454,7 +601,7 @@ let normalized = normalize_query(query_string, false)?;
 
 ## License
 
-[License information here]
+MIT. See [LICENSE](LICENSE).
 
 ## Author
 

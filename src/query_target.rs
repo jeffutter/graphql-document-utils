@@ -1,6 +1,7 @@
 use crate::util;
 use graphql_parser::schema::{
-    Definition as SchemaDef, Document as SchemaDoc, Field as SchemaField, TypeDefinition,
+    Definition as SchemaDef, DirectiveDefinition, Document as SchemaDoc, Field as SchemaField,
+    InputValue, TypeDefinition,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -29,20 +30,25 @@ impl<'t> Target<'t> {
 /// selected on the `Person` interface. Shared by `query focus` and
 /// `query strip`, which agree on what a target *is* and differ only in what
 /// they do with a match.
+///
+/// Types are resolved with their `extend` blocks merged in, so a field or
+/// interface an extension adds is known like any other.
 pub struct Matcher<'s, 't> {
-    type_map: HashMap<String, &'s TypeDefinition<'s, String>>,
+    type_map: HashMap<String, TypeDefinition<'s, String>>,
+    directives: HashMap<String, &'s DirectiveDefinition<'s, String>>,
     targets: Vec<Target<'t>>,
 }
 
 impl<'s, 't> Matcher<'s, 't> {
     pub fn new(schema: &'s SchemaDoc<'s, String>, targets: &'t [&'t str]) -> Self {
         Matcher {
-            type_map: schema
+            type_map: util::merged_type_definitions(schema),
+            directives: schema
                 .definitions
                 .iter()
                 .filter_map(|def| match def {
-                    SchemaDef::TypeDefinition(td) => {
-                        util::schema_type_definition_name(td).map(|name| (name.clone(), td))
+                    SchemaDef::DirectiveDefinition(directive) => {
+                        Some((directive.name.clone(), directive))
                     }
                     _ => None,
                 })
@@ -51,10 +57,9 @@ impl<'s, 't> Matcher<'s, 't> {
         }
     }
 
-    pub fn field_def(&self, parent_type: &str, name: &str) -> Option<&'s SchemaField<'s, String>> {
+    pub fn field_def(&self, parent_type: &str, name: &str) -> Option<&SchemaField<'s, String>> {
         self.type_map
             .get(parent_type)
-            .copied()
             .and_then(util::type_fields)
             .and_then(|fields| fields.iter().find(|field| field.name == *name))
     }
@@ -62,25 +67,39 @@ impl<'s, 't> Matcher<'s, 't> {
     /// The name of the type a field lands on, with list and non-null wrappers
     /// stripped. `None` when the schema does not define the field, which is the
     /// case for meta fields like `__typename`.
-    pub fn field_type(&self, parent_type: &str, name: &str) -> Option<&'s str> {
+    pub fn field_type(&self, parent_type: &str, name: &str) -> Option<&str> {
         self.field_def(parent_type, name)
             .and_then(|def| util::named_type(&def.field_type))
             .map(String::as_str)
     }
 
-    /// The name of the type a field argument accepts, wrappers stripped.
-    pub fn argument_type(
+    /// The arguments a field declares. `None` when the schema does not define
+    /// the field.
+    pub fn field_arguments(
         &self,
         parent_type: &str,
         field_name: &str,
-        argument: &str,
-    ) -> Option<&'s str> {
-        self.field_def(parent_type, field_name)?
-            .arguments
-            .iter()
-            .find(|input| input.name == *argument)
-            .and_then(|input| util::named_type(&input.value_type))
-            .map(String::as_str)
+    ) -> Option<&[InputValue<'s, String>]> {
+        self.field_def(parent_type, field_name)
+            .map(|def| def.arguments.as_slice())
+    }
+
+    /// The fields an input object type declares. `None` when `type_name` is not
+    /// an input object the schema defines.
+    pub fn input_fields(&self, type_name: &str) -> Option<&[InputValue<'s, String>]> {
+        match self.type_map.get(type_name) {
+            Some(TypeDefinition::InputObject(input)) => Some(&input.fields),
+            _ => None,
+        }
+    }
+
+    /// The arguments a directive declares. `None` when the schema does not
+    /// define the directive, which is usually the case for the built-in
+    /// `@include` and `@skip`.
+    pub fn directive_arguments(&self, name: &str) -> Option<&[InputValue<'s, String>]> {
+        self.directives
+            .get(name)
+            .map(|directive| directive.arguments.as_slice())
     }
 
     /// True if arriving at `type_name` means arriving at one of the targeted

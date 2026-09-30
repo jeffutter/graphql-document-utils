@@ -24,15 +24,16 @@ pub fn process(schema: &str) -> String {
                 Definition::TypeDefinition(td) => util::schema_type_definition_name(td)
                     .cloned()
                     .unwrap_or_default(),
-                Definition::TypeExtension(_) => String::new(),
+                Definition::TypeExtension(te) => util::type_extension_name(te).clone(),
             };
 
             (i, (category, name))
         })
         .collect();
 
-    // Sort by the keys
-    indices_with_keys.sort_by_key(|(_, key)| key.clone());
+    // Sort by the keys. The sort is stable, so definitions sharing a key, such
+    // as several extensions of one type, keep their source order.
+    indices_with_keys.sort_by(|(_, a), (_, b)| a.cmp(b));
 
     // Create sorted definitions using the sorted indices
     let sorted_definitions: Vec<_> = indices_with_keys
@@ -50,7 +51,7 @@ pub fn process(schema: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::sort;
+    use crate::{sort, util};
     use indoc::indoc;
     use pretty_assertions::assert_eq;
 
@@ -280,6 +281,245 @@ mod tests {
         "};
 
         assert_eq!(result.trim(), expected_schema.trim());
+    }
+
+    #[test]
+    fn test_sort_extensions_by_extended_type_name() {
+        let schema = indoc! {"
+            extend type Query {
+              b: B
+            }
+
+            type Query {
+              a: A
+            }
+
+            extend type B {
+              x: Int
+            }
+
+            type B {
+              id: ID
+            }
+
+            extend type A {
+              y: Int
+            }
+
+            type A {
+              id: ID
+            }
+        "};
+
+        let result = sort::process(schema);
+        let expected_schema = indoc! {"
+            type A {
+              id: ID
+            }
+
+            type B {
+              id: ID
+            }
+
+            type Query {
+              a: A
+            }
+
+            extend type A {
+              y: Int
+            }
+
+            extend type B {
+              x: Int
+            }
+
+            extend type Query {
+              b: B
+            }
+        "};
+
+        assert_eq!(result.trim(), expected_schema.trim());
+        util::assert_self_contained(&result);
+    }
+
+    #[test]
+    fn test_sort_extensions_of_one_type_keep_source_order() {
+        let schema = indoc! {"
+            type Query {
+              id: ID
+            }
+
+            type User {
+              id: ID
+            }
+
+            extend type User {
+              third: Int
+            }
+
+            extend type Query {
+              second: Int
+            }
+
+            extend type User {
+              first: Int
+            }
+
+            extend type Query {
+              first: Int
+            }
+
+            extend type User {
+              second: Int
+            }
+        "};
+
+        let result = sort::process(schema);
+        let expected_schema = indoc! {"
+            type Query {
+              id: ID
+            }
+
+            type User {
+              id: ID
+            }
+
+            extend type Query {
+              second: Int
+            }
+
+            extend type Query {
+              first: Int
+            }
+
+            extend type User {
+              third: Int
+            }
+
+            extend type User {
+              first: Int
+            }
+
+            extend type User {
+              second: Int
+            }
+        "};
+
+        assert_eq!(result.trim(), expected_schema.trim());
+        util::assert_self_contained(&result);
+    }
+
+    #[test]
+    fn test_sort_mixed_extension_kinds() {
+        let schema = indoc! {"
+            extend union SearchResult = Company
+
+            extend scalar DateTime @tag
+
+            extend input UserInput {
+              email: String
+            }
+
+            extend enum Status {
+              PENDING
+            }
+
+            extend interface Node {
+              createdAt: DateTime
+            }
+
+            extend type Query {
+              search: [SearchResult]
+            }
+
+            type User implements Node {
+              id: ID!
+              createdAt: DateTime
+            }
+
+            type Company {
+              id: ID!
+            }
+
+            input UserInput {
+              name: String
+            }
+
+            union SearchResult = User
+
+            enum Status {
+              ACTIVE
+            }
+
+            interface Node {
+              id: ID!
+            }
+
+            scalar DateTime
+
+            type Query {
+              user(input: UserInput, status: Status): User
+            }
+
+            directive @tag on SCALAR
+        "};
+
+        let result = sort::process(schema);
+        let expected_schema = indoc! {"
+            directive @tag on SCALAR
+
+            type Company {
+              id: ID!
+            }
+
+            scalar DateTime
+
+            interface Node {
+              id: ID!
+            }
+
+            type Query {
+              user(input: UserInput, status: Status): User
+            }
+
+            union SearchResult = User
+
+            enum Status {
+              ACTIVE
+            }
+
+            type User implements Node {
+              id: ID!
+              createdAt: DateTime
+            }
+
+            input UserInput {
+              name: String
+            }
+
+            extend scalar DateTime @tag
+
+            extend interface Node {
+              createdAt: DateTime
+            }
+
+            extend type Query {
+              search: [SearchResult]
+            }
+
+            extend union SearchResult = Company
+
+            extend enum Status {
+              PENDING
+            }
+
+            extend input UserInput {
+              email: String
+            }
+        "};
+
+        assert_eq!(result.trim(), expected_schema.trim());
+        util::assert_self_contained(&result);
     }
 
     #[test]
