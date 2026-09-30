@@ -33,8 +33,9 @@ parse and run every command in it. The details:
   clap's `[default: -]`
 - `skill.rs`'s `render` is YAML frontmatter (`name` is `CARGO_BIN_NAME`;
   `description` lists intents, as it is all an agent sees before loading the
-  skill), a stamp of `CARGO_PKG_VERSION` and the command that regenerates it,
-  the hand-written `MENTAL_MODEL` and `TARGETS`, then a reference
+  skill), a stamp of `CARGO_PKG_VERSION` saying when to regenerate it, the
+  hand-written `STEPS` (how to run any command, as numbered steps), then a
+  reference
   per verb: a synopsis spelling out every argument clap defines (optional ones
   bracketed, where clap's usage says `[OPTIONS]`), the `about` run into the
   `long_about`'s summary, and the examples, then `results()`: the hand-written
@@ -59,7 +60,7 @@ parse and run every command in it. The details:
   snapshot of the whole output
   (`src/snapshots/graphql_document_utils__skill__tests__snapshot.snap`), with
   the version replaced by `[version]` so a release's version bump does not
-  break it. They also check that the README's Usage bullets are `MENTAL_MODEL`'s
+  break it. They also check that the README's Usage steps are `STEPS`'s
   and its "Results and exit codes" section is `results()`, word for word, so
   those parts of the README are copied from `cargo run -- skill`, not edited
 - `tests/examples.rs` runs every example of every leaf (walked from the

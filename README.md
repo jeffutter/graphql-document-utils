@@ -48,22 +48,50 @@ graphql-document-utils skill > ~/.claude/skills/graphql-document-utils/SKILL.md
 Every command but `skill` is `graphql-document-utils <noun> <verb>`, where the
 noun is `query` or `schema`.
 
-- Every `query` and `schema` command is a filter: it prints a GraphQL
-  document to stdout and changes no file, so redirect stdout to save it.
-  Errors, warnings, and notes go to stderr, as `error:`, `warning:`, and
-  `note:` lines.
-- The document a command is named for reads stdin when its flag is omitted
-  (`-q` on `query` commands, `-s` on `schema` commands), so commands chain with
-  pipes. Outside a pipeline, pass the file: a command fails at once when stdin
-  is a terminal, but waits on an open stdin that is never closed.
-- Stdin holds one document, so the other is a file. `query focus` and
-  `query strip` need `-s SCHEMA`, as a query alone does not say what type each
-  field returns. `schema prune` needs `-q QUERY`, or `-q -` to read the query
-  from stdin when `-s` names a file.
-- Positional arguments are type or field names, never files.
-- `#` comments are dropped, and `"descriptions"` kept. A name defined more
-  than once warns, and only its first definition is used, except by
-  `query normalize`, `schema format`, and `schema sort`, which keep them all.
+1. Pick the command for the task from the per-command sections below. For
+   every rule of one command, run `graphql-document-utils <noun> <verb> --help`.
+2. Pass the documents.
+   - Pass the query to a `query` command with `-q FILE`.
+   - Pass the schema to a `schema` command with `-s FILE`.
+   - Omit the `-q` of a `query` command, or the `-s` of a `schema` command,
+     to read that document from stdin, as in a pipeline.
+   - Outside a pipeline, pass every document with its flag. A command waits
+     forever on a stdin pipe that never closes.
+   - Pass `query focus` and `query strip` the schema too, with `-s FILE`.
+   - Pass `schema prune` the query too, with `-q FILE`. To pipe the query in,
+     pass `-q -` and the schema with `-s FILE`.
+3. Pass targets to `query focus`, `query strip`, and `schema focus` as
+   positional arguments.
+   - Pass `query focus` and `query strip` types (`Profile`) or fields on a
+     type (`User.email`).
+   - Pass `schema focus` types. To target a field, use `query focus`.
+   - Spell each name as the schema does, case included. Names from `extend`
+     blocks count.
+   - Pass files only with `-q` and `-s`. A positional argument is a name.
+   - An unknown name exits 1, with a did-you-mean when a name is close.
+   - An interface or union target also matches its implementors or members.
+   - A field target matches across interfaces both ways. When `User`
+     implements `Person`, `Person.name` matches `name` on `User`, and
+     `User.name` matches `name` on `Person`.
+   - Fields the schema does not define, such as `__typename`, match no target.
+   - `query focus` matches output selections only. An input type target
+     matches nothing.
+   - `query strip` also removes arguments and input fields of a stripped type,
+     and their variables.
+   - `query strip` removes a field or inline fragment whose selection set it
+     empties, and an operation it empties.
+   - `query strip` removes a field or directive whose required input it
+     removes.
+4. Redirect stdout to a file to save the result.
+5. Read the result.
+   - Stdout holds only the GraphQL document.
+   - Stderr holds `error:`, `warning:`, and `note:` lines.
+   - Look up the exit code under Results and exit codes below.
+   - On exit 1 or 2, fix what the `error:` line names, then rerun.
+   - The output drops `#` comments and keeps `"descriptions"`.
+   - A name defined more than once gets a `warning:`, and the command uses
+     its first definition. `query normalize`, `schema format`, and
+     `schema sort` keep every definition.
 
 The examples below run against this schema, `schema.graphql`:
 
@@ -346,19 +374,17 @@ Prune before focusing: `schema focus User` drops `Query`, which leaves
 
 ### Results and exit codes
 
-- `0`: success. A valid target that matches nothing is not an error, but gets
-  a `note:` on stderr. When no target matches, `query focus` prints nothing,
-  and `query strip` prints the query unchanged apart from dropping unused
-  fragments.
-- Empty output is zero bytes. A blank document to transform (only whitespace,
-  commas, and comments) passes through as empty, so a pipeline survives a
-  stage that leaves nothing.
+- `0`: success. A valid target that matches nothing adds a `note:` on stderr.
+  When no target matches, `query focus` prints nothing, and `query strip`
+  prints the query minus its unused fragments.
+- Empty output is zero bytes. A blank document to transform passes through as
+  empty, so the next command in a pipeline still runs. Blank means only
+  whitespace, commas, and comments.
 - `1`: bad input, or output that cannot be written: an unreadable file, a parse
   error (with line and column), a blank schema for `query focus` or
   `query strip`, a malformed target (or a file passed as one), an unknown type
-  or field (with a did-you-mean when a name is close), a field or built-in
-  scalar given to `schema focus`, or a failed write to stdout (as on a full
-  disk).
+  or field, a field or built-in scalar given to `schema focus`, or a failed
+  write to stdout (as on a full disk).
 - `2`: usage error: an unknown command or flag, a missing flag or targets, no
   document to read (no flag, and stdin a terminal), or both of `schema prune`'s
   documents on stdin.

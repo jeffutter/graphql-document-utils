@@ -37,10 +37,6 @@ input SearchFilter {
   term: String
 }
 
-$ graphql-document-utils schema prune -s schema.graphql -q query.graphql > pruned.graphql
-exit: 0
-stdout: as for `graphql-document-utils schema prune -s schema.graphql -q query.graphql`
-
 $ cat queries/*.graphql | graphql-document-utils schema prune -s schema.graphql -q -
 exit: 0
 stdout:

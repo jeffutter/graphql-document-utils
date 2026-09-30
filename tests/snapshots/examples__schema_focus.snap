@@ -2,31 +2,7 @@
 source: tests/examples.rs
 expression: transcript(&examples)
 ---
-$ graphql-document-utils schema focus -s schema.graphql User
-exit: 0
-stdout:
-"Anything with a global ID."
-interface Node {
-  id: ID!
-}
-
-type User implements Node {
-  id: ID!
-  name: String
-  email: String
-  profile: Profile
-}
-
-type Profile {
-  bio: String
-  avatar: Avatar
-}
-
-type Avatar {
-  url: String
-}
-
-$ graphql-document-utils schema focus -s schema.graphql User Company > user-company.graphql
+$ graphql-document-utils schema focus -s schema.graphql User Company
 exit: 0
 stdout:
 "Anything with a global ID."

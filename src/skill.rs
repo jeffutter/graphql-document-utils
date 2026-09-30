@@ -19,50 +19,23 @@ use crate::{error::Error, Args};
 /// When the skill applies, which is all an agent sees of it before loading
 /// it, so it lists what someone would ask for rather than what the tool has.
 /// One line, which YAML reads as a plain string as long as it has no `: `.
-const DESCRIPTION: &str = "Transform GraphQL documents from the command line. Use when you need to canonicalize or diff GraphQL queries, cut a query down to the parts that reach a type or field, remove a type or field and everything that references it from a query, prune a schema to what a set of queries actually uses, extract a type and its dependencies from a schema, or sort and format SDL.";
+const DESCRIPTION: &str = "Transform GraphQL documents from the command line. Use to canonicalize or diff GraphQL queries, cut a query down to the parts that reach a type or field, remove a type or field and everything that references it from a query, prune a schema to what a set of queries uses, extract a type and its dependencies from a schema, or sort and format a schema.";
 
-/// What every command shares, which the README's usage shows too.
+/// How to run any command, in the order an agent does it. The README's usage
+/// lists the same steps.
 //
 // Tested by:
-// - a filter: `cli::no_command_changes_a_file`, and every example's stdout in
-//   `examples::every_example_runs`
-// - stderr: `cli::bad_input_exits_1`,
-//   `cli::a_repeated_definition_warns_and_the_first_is_used`,
+// - stdout and stderr: `cli::no_command_changes_a_file`, every example's stdout
+//   in `examples::every_example_runs`, `cli::bad_input_exits_1`,
 //   `cli::a_target_that_matches_nothing_gets_a_note`
 // - stdin: `docs::every_stdin_flag_says_so_in_one_wording`,
 //   `cli::a_schema_piped_in_is_read_as_if_from_its_file`,
-//   `cli::a_query_from_a_terminal_is_a_usage_error`,
-//   `cli::a_schema_from_a_terminal_is_a_usage_error`,
 //   `cli::a_command_waits_on_an_open_stdin`
 // - the other document: `docs::the_other_document_is_a_required_flag`,
 //   `cli::prune_reads_either_document_from_stdin`,
 //   `cli::prune_cannot_read_both_documents_from_stdin`
-// - never files: `cli::a_query_file_given_as_a_target_fails_without_reading_stdin`,
+// - files as targets: `cli::a_query_file_given_as_a_target_fails_without_reading_stdin`,
 //   `cli::a_schema_file_given_as_a_type_fails_without_reading_stdin`
-// - comments and repeats: `cli::comments_are_dropped_and_descriptions_kept`,
-//   `cli::only_the_commands_that_lay_a_document_out_keep_repeats`
-const MENTAL_MODEL: &str = "\
-## Mental model
-
-- Every `query` and `schema` command is a filter: it prints a GraphQL
-  document to stdout and changes no file, so redirect stdout to save it.
-  Errors, warnings, and notes go to stderr, as `error:`, `warning:`, and
-  `note:` lines.
-- The document a command is named for reads stdin when its flag is omitted
-  (`-q` on `query` commands, `-s` on `schema` commands), so commands chain with
-  pipes. Outside a pipeline, pass the file: a command fails at once when stdin
-  is a terminal, but waits on an open stdin that is never closed.
-- Stdin holds one document, so the other is a file. `query focus` and
-  `query strip` need `-s SCHEMA`, as a query alone does not say what type each
-  field returns. `schema prune` needs `-q QUERY`, or `-q -` to read the query
-  from stdin when `-s` names a file.
-- Positional arguments are type or field names, never files.
-- `#` comments are dropped, and `\"descriptions\"` kept. A name defined more
-  than once warns, and only its first definition is used, except by
-  `query normalize`, `schema format`, and `schema sort`, which keep them all.";
-
-//
-// Tested by:
 // - names: `query_target::accepts_types_and_fields_added_by_extensions`,
 //   `focus::test_focus_on_a_type_defined_only_by_extensions`,
 //   `focus::suggests_the_right_case`,
@@ -82,26 +55,56 @@ const MENTAL_MODEL: &str = "\
 //   `query_strip::drops_operations_left_with_nothing`,
 //   `query_strip::removes_the_field_when_a_required_argument_is_stripped`,
 //   `query_strip::drops_a_directive_that_loses_a_required_argument`
-const TARGETS: &str = "\
-## Targets
+// - comments and repeats: `cli::comments_are_dropped_and_descriptions_kept`,
+//   `cli::a_repeated_definition_warns_and_the_first_is_used`,
+//   `cli::only_the_commands_that_lay_a_document_out_keep_repeats`
+const STEPS: &str = "\
+## Steps
 
-`query focus` and `query strip` take types (`Profile`) and fields on a type
-(`User.email`); `schema focus` takes types.
-
-- Names are the schema's, extensions included, and case-sensitive. An unknown
-  one fails, with a did-you-mean when a name is close, and a `Type.field` given
-  to `schema focus` fails with a pointer to `query focus`.
-- Subtypes match: an interface or union target matches its implementors or
-  members, and a field target matches across the interface hierarchy both
-  ways, so `Person.name` matches `name` selected on a `User` that implements
-  `Person`, and `User.name` matches `name` selected on `Person`.
-- Fields the schema does not define, such as `__typename`, never match.
-- `query focus` matches output selections only, never an input type.
-  `query strip` also removes the arguments and input fields typed with a
-  stripped type, and the variables behind them.
-- `query strip` cascades: a selection set left empty takes its parent field or
-  inline fragment with it, and an operation left empty is dropped. A required
-  input is never removed alone; the field or directive using it goes instead.";
+1. Pick the command for the task from the per-command sections below. For
+   every rule of one command, run `graphql-document-utils <noun> <verb> --help`.
+2. Pass the documents.
+   - Pass the query to a `query` command with `-q FILE`.
+   - Pass the schema to a `schema` command with `-s FILE`.
+   - Omit the `-q` of a `query` command, or the `-s` of a `schema` command,
+     to read that document from stdin, as in a pipeline.
+   - Outside a pipeline, pass every document with its flag. A command waits
+     forever on a stdin pipe that never closes.
+   - Pass `query focus` and `query strip` the schema too, with `-s FILE`.
+   - Pass `schema prune` the query too, with `-q FILE`. To pipe the query in,
+     pass `-q -` and the schema with `-s FILE`.
+3. Pass targets to `query focus`, `query strip`, and `schema focus` as
+   positional arguments.
+   - Pass `query focus` and `query strip` types (`Profile`) or fields on a
+     type (`User.email`).
+   - Pass `schema focus` types. To target a field, use `query focus`.
+   - Spell each name as the schema does, case included. Names from `extend`
+     blocks count.
+   - Pass files only with `-q` and `-s`. A positional argument is a name.
+   - An unknown name exits 1, with a did-you-mean when a name is close.
+   - An interface or union target also matches its implementors or members.
+   - A field target matches across interfaces both ways. When `User`
+     implements `Person`, `Person.name` matches `name` on `User`, and
+     `User.name` matches `name` on `Person`.
+   - Fields the schema does not define, such as `__typename`, match no target.
+   - `query focus` matches output selections only. An input type target
+     matches nothing.
+   - `query strip` also removes arguments and input fields of a stripped type,
+     and their variables.
+   - `query strip` removes a field or inline fragment whose selection set it
+     empties, and an operation it empties.
+   - `query strip` removes a field or directive whose required input it
+     removes.
+4. Redirect stdout to a file to save the result.
+5. Read the result.
+   - Stdout holds only the GraphQL document.
+   - Stderr holds `error:`, `warning:`, and `note:` lines.
+   - Look up the exit code under Results and exit codes below.
+   - On exit 1 or 2, fix what the `error:` line names, then rerun.
+   - The output drops `#` comments and keeps `\"descriptions\"`.
+   - A name defined more than once gets a `warning:`, and the command uses
+     its first definition. `query normalize`, `schema format`, and
+     `schema sort` keep every definition.";
 
 /// What the results of a command that succeeds are. What each other exit code
 /// means is listed after this from the errors themselves, by `exit_codes`.
@@ -116,13 +119,12 @@ const TARGETS: &str = "\
 //   `cli::an_empty_focus_pipes_into_format`,
 //   `cli::an_empty_strip_pipes_into_normalize`
 const SUCCESS: &str = "\
-- `0`: success. A valid target that matches nothing is not an error, but gets
-  a `note:` on stderr. When no target matches, `query focus` prints nothing,
-  and `query strip` prints the query unchanged apart from dropping unused
-  fragments.
-- Empty output is zero bytes. A blank document to transform (only whitespace,
-  commas, and comments) passes through as empty, so a pipeline survives a
-  stage that leaves nothing.";
+- `0`: success. A valid target that matches nothing adds a `note:` on stderr.
+  When no target matches, `query focus` prints nothing, and `query strip`
+  prints the query minus its unused fragments.
+- Empty output is zero bytes. A blank document to transform passes through as
+  empty, so the next command in a pipeline still runs. Blank means only
+  whitespace, commas, and comments.";
 
 /// The usage errors clap reports on its own, before any command runs.
 const CLAP_ERRORS: [&str; 2] = ["an unknown command or flag", "a missing flag or targets"];
@@ -183,6 +185,22 @@ fn results() -> String {
 pub fn render() -> String {
     let bin = env!("CARGO_BIN_NAME");
     let version = env!("CARGO_PKG_VERSION");
+    let stamp = wrap(
+        &format!(
+            "Generated by {bin} {version}. If this guide is a saved file and \
+             `{bin} --version` prints another version, overwrite the file with \
+             the output of `{bin} skill`."
+        ),
+        80,
+    );
+    let intro = wrap(
+        &format!(
+            "Use `{bin}` to transform a GraphQL query or schema. Each command prints \
+             the transformed document to stdout. Run a command as \
+             `{bin} <noun> <verb>`, where the noun is `query` or `schema`."
+        ),
+        80,
+    );
     let mut skill = format!(
         "\
 ---
@@ -192,16 +210,11 @@ description: {DESCRIPTION}
 
 # {bin}
 
-Generated by {bin} {version}. Regenerate after upgrading:
-`{bin} skill > <skills-dir>/{bin}/SKILL.md`
+{stamp}
 
-The tool rewrites GraphQL documents. Each command but `skill` is a noun,
-`query` or `schema`, and a verb. This guide covers what they share, then each
-command; `{bin} <noun> <verb> --help` has every rule.
+{intro}
 
-{MENTAL_MODEL}
-
-{TARGETS}
+{STEPS}
 "
     );
     let args = Args::command();
@@ -412,12 +425,12 @@ mod tests {
         }
     }
 
-    /// The README's usage lists what every command shares as the skill does.
+    /// The README's usage lists the steps as the skill does.
     #[test]
-    fn the_readme_has_the_mental_model() {
+    fn the_readme_has_the_steps() {
         let readme = include_str!("../README.md");
-        let (_, bullets) = super::MENTAL_MODEL.split_once("\n\n").unwrap();
-        assert!(readme.contains(&format!("\n\n{bullets}\n\n")), "{bullets}");
+        let (_, steps) = super::STEPS.split_once("\n\n").unwrap();
+        assert!(readme.contains(&format!("\n\n{steps}\n\n")), "{steps}");
     }
 
     /// The README's results section is the skill's, word for word, so both

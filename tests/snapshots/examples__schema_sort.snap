@@ -44,10 +44,6 @@ type User implements Node {
   profile: Profile
 }
 
-$ graphql-document-utils schema sort -s schema.graphql > sorted.graphql
-exit: 0
-stdout: as for `graphql-document-utils schema sort -s schema.graphql`
-
 $ graphql-document-utils schema focus -s schema.graphql User | graphql-document-utils schema sort
 exit: 0 | 0
 stdout:

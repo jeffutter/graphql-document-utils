@@ -44,10 +44,6 @@ input SearchFilter {
   term: String
 }
 
-$ graphql-document-utils schema format -s schema.graphql > formatted.graphql
-exit: 0
-stdout: as for `graphql-document-utils schema format -s schema.graphql`
-
 $ cat schema.graphql | graphql-document-utils schema format
 exit: 0
 stdout: as for `graphql-document-utils schema format -s schema.graphql`

@@ -125,10 +125,9 @@ pub const QUERY_NORMALIZE_ABOUT: &str = "Format and sort a query into a canonica
 pub const QUERY_NORMALIZE_LONG_ABOUT: &str = "\
 Format and sort a query into a canonical form
 
-Queries that differ only in layout, or in the order of definitions, selections,
-arguments, and directives with different names, normalize to the same text, so
-the output can be diffed, hashed, or used to find duplicates. No schema is
-needed.
+Layout does not change the output. Neither does the order of definitions,
+selections, arguments, and directives with different names. Use the output to
+diff, hash, or deduplicate queries. No schema is needed.
 
 Operations come first, queries then mutations then subscriptions, each sorted by
 name, followed by fragments sorted by name. In a selection set, fields are
@@ -152,7 +151,6 @@ whitespace";
 pub const QUERY_NORMALIZE_EXAMPLES: &str = "\
 Examples:
   graphql-document-utils query normalize -q query.graphql
-  graphql-document-utils query normalize -q query.graphql --minify
   cat query.graphql | graphql-document-utils query normalize -m";
 
 pub const QUERY_FOCUS_ABOUT: &str =
@@ -181,9 +179,9 @@ pub const QUERY_FOCUS_ABOUT: &str =
 pub const QUERY_FOCUS_LONG_ABOUT: &str = "\
 Keep only the parts of a query that reach the given types or fields
 
-Every path from an operation root to a selection matching a target is kept,
-along with the whole selection at the match, so the output is still a valid
-query. Fragments are pruned in place rather than inlined.
+Every path from an operation root to a selection matching a target stays,
+plus the whole selection at the match. The output stays a valid query.
+Fragments stay fragments, trimmed in place.
 
 A target is a type (`Profile`) or a field on a type (`User.email`), named as
 the schema names them. Fragments, variable definitions, and operations that no
@@ -250,10 +248,9 @@ pub const QUERY_STRIP_ABOUT: &str =
 pub const QUERY_STRIP_LONG_ABOUT: &str = "\
 Remove the given types or fields, and every reference to them, from a query
 
-The complement of `query focus`, taking the same targets and matching them the
-same way, subtypes included. Stripping an interface or union therefore strips
-every selection that returns one of its implementors or members, which can
-leave nothing.
+Targets and their matching are the same as in `query focus`, subtypes
+included. Stripping an interface or union strips every selection
+returning one of its implementors or members. That can leave nothing.
 
 Removal cascades: a selection set left empty takes its parent field or inline
 fragment with it, and an operation left with nothing is dropped. Fragments on a
@@ -304,8 +301,8 @@ pub const SCHEMA_FORMAT_ABOUT: &str = "Reformat a schema, leaving its contents u
 pub const SCHEMA_FORMAT_LONG_ABOUT: &str = "\
 Reformat a schema, leaving its contents unchanged
 
-Prints every definition in a standard layout, in source order; `schema sort`
-also sorts them.
+Every definition prints in a standard layout, in source order. To also sort
+them, use `schema sort`.
 
 A name defined more than once keeps every definition, as written. Descriptions
 are kept, but `#` comments are dropped. A blank schema passes through as empty.";
@@ -313,7 +310,6 @@ are kept, but `#` comments are dropped. A blank schema passes through as empty."
 pub const SCHEMA_FORMAT_EXAMPLES: &str = "\
 Examples:
   graphql-document-utils schema format -s schema.graphql
-  graphql-document-utils schema format -s schema.graphql > formatted.graphql
   cat schema.graphql | graphql-document-utils schema format";
 
 pub const SCHEMA_SORT_ABOUT: &str =
@@ -335,9 +331,9 @@ pub const SCHEMA_SORT_ABOUT: &str =
 pub const SCHEMA_SORT_LONG_ABOUT: &str = "\
 Sort schema definitions by category, then alphabetically by name
 
-Categories come in this order: the schema definition, directives, types, then
-type extensions, each sorted by name. The output is laid out as `schema format`
-lays it out, so there is no need to run both.
+The categories, in order, are the schema definition, directives, types, and
+type extensions. The output is already formatted as `schema format` formats
+it.
 
 All type kinds (object, interface, union, enum, input, scalar) are interleaved
 within types. Extensions are sorted by the name of the type they extend, and
@@ -351,7 +347,6 @@ but `#` comments are dropped. A blank schema passes through as empty.";
 pub const SCHEMA_SORT_EXAMPLES: &str = "\
 Examples:
   graphql-document-utils schema sort -s schema.graphql
-  graphql-document-utils schema sort -s schema.graphql > sorted.graphql
   graphql-document-utils schema focus -s schema.graphql User | graphql-document-utils schema sort";
 
 pub const SCHEMA_FOCUS_ABOUT: &str =
@@ -377,10 +372,10 @@ pub const SCHEMA_FOCUS_ABOUT: &str =
 pub const SCHEMA_FOCUS_LONG_ABOUT: &str = "\
 Reduce a schema to the given types and everything they depend on
 
-Each type is kept along with every type reachable from it through field
-types, union members, and interface implementors, and with what the kept
-definitions need to stand alone: argument and input types, the interfaces they
-implement, and the definitions of directives they apply.
+Each given type stays, with every type it reaches through field types, union
+members, and interface implementors. So does what the kept types need to stand
+alone: argument and input types, implemented interfaces, and directive
+definitions.
 
 An interface kept only because a type implements it brings in none of its
 other implementors. Extensions of a kept type are kept whole and in place, and
@@ -403,8 +398,7 @@ pub const SCHEMA_FOCUS_TYPES: &str = "Types to keep, along with all of their des
 
 pub const SCHEMA_FOCUS_EXAMPLES: &str = "\
 Examples:
-  graphql-document-utils schema focus -s schema.graphql User
-  graphql-document-utils schema focus -s schema.graphql User Company > user-company.graphql
+  graphql-document-utils schema focus -s schema.graphql User Company
   cat schema.graphql | graphql-document-utils schema focus SearchResult";
 
 pub const SCHEMA_PRUNE_ABOUT: &str =
@@ -428,8 +422,8 @@ pub const SCHEMA_PRUNE_ABOUT: &str =
 pub const SCHEMA_PRUNE_LONG_ABOUT: &str = "\
 Remove the types and fields a query does not use from a schema
 
-Types the query never enters are removed, and object and interface types keep
-only the fields it selects on them or on an interface they implement. The query
+Every type the query never enters is removed. Object and interface types keep
+only the fields the query selects on them or on their interfaces. The query
 stays valid against the output.
 
 An interface the query enters keeps every implementor, since any of them can
@@ -459,7 +453,6 @@ must then name a file.";
 pub const SCHEMA_PRUNE_EXAMPLES: &str = "\
 Examples:
   graphql-document-utils schema prune -s schema.graphql -q query.graphql
-  graphql-document-utils schema prune -s schema.graphql -q query.graphql > pruned.graphql
   cat queries/*.graphql | graphql-document-utils schema prune -s schema.graphql -q -";
 
 pub const SKILL_ABOUT: &str = "Print a complete guide to this tool for agents, as an Agent Skill";

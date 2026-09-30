@@ -43,6 +43,48 @@ type Avatar {
   url: String
 }
 
+$ graphql-document-utils schema sort -s schema.graphql > sorted.graphql
+exit: 0
+stdout:
+type Avatar {
+  url: String
+}
+
+type Company implements Node {
+  id: ID!
+  name: String
+  employees(first: Int): [User]
+}
+
+"Anything with a global ID."
+interface Node {
+  id: ID!
+}
+
+type Profile {
+  bio: String
+  avatar: Avatar
+}
+
+type Query {
+  user(id: ID!): User
+  company: Company
+  search(filter: SearchFilter): [SearchResult]
+}
+
+input SearchFilter {
+  term: String
+}
+
+union SearchResult = User | Company
+
+type User implements Node {
+  id: ID!
+  name: String
+  email: String
+  profile: Profile
+}
+
 $ cat query.graphql | graphql-document-utils query strip -s schema.graphql SearchFilter | graphql-document-utils query focus -s schema.graphql Profile | graphql-document-utils query normalize -m
 exit: 0 | 0 | 0
 stdout:

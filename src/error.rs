@@ -133,7 +133,7 @@ impl Error {
                 "a malformed target (or a file passed as one)"
             }
             Error::UnknownType { .. } | Error::UnknownField { .. } | Error::NoFields { .. } => {
-                "an unknown type or field (with a did-you-mean when a name is close)"
+                "an unknown type or field"
             }
             Error::FieldInSchemaFocus { .. } | Error::BuiltInScalar { .. } => {
                 "a field or built-in scalar given to `schema focus`"
