@@ -8,6 +8,8 @@ mod query_strip;
 mod query_target;
 mod skill;
 mod sort;
+mod subgraph;
+mod supergraph;
 mod util;
 
 use std::{
@@ -181,6 +183,36 @@ enum SchemaCommands {
         )]
         schema: FileOrStdin,
     },
+    #[command(
+        about = docs::SCHEMA_SPLIT_ABOUT,
+        long_about = docs::SCHEMA_SPLIT_LONG_ABOUT,
+        after_help = docs::SCHEMA_SPLIT_EXAMPLES,
+    )]
+    Split {
+        #[arg(
+            short, long, default_value = "-", hide_default_value = true,
+            help = docs::SCHEMA_FROM_STDIN,
+        )]
+        schema: FileOrStdin,
+
+        #[arg(short, long, value_name = "DIR", help = docs::SCHEMA_SPLIT_OUTPUT)]
+        output: PathBuf,
+    },
+    #[command(
+        about = docs::SCHEMA_SUBGRAPH_ABOUT,
+        long_about = docs::SCHEMA_SUBGRAPH_LONG_ABOUT,
+        after_help = docs::SCHEMA_SUBGRAPH_EXAMPLES,
+    )]
+    Subgraph {
+        #[arg(
+            short, long, default_value = "-", hide_default_value = true,
+            help = docs::SCHEMA_FROM_STDIN,
+        )]
+        schema: FileOrStdin,
+
+        #[arg(help = docs::SCHEMA_SUBGRAPH_NAME)]
+        name: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -338,6 +370,14 @@ fn run(
             SchemaCommands::Sort { schema } => {
                 let schema = Input::read(schema, Kind::Schema)?;
                 sort::process(&schema)?.into()
+            }
+            SchemaCommands::Split { schema, output } => {
+                let schema = Input::read(schema, Kind::Schema)?;
+                subgraph::split(&schema, &output, warnings)?
+            }
+            SchemaCommands::Subgraph { schema, name } => {
+                let schema = Input::read(schema, Kind::Schema)?;
+                subgraph::process(&schema, &name, warnings)?
             }
         },
     };

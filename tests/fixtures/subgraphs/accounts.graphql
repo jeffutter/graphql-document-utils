@@ -1,0 +1,46 @@
+extend schema
+  @link(
+    url: "https://specs.apollo.dev/federation/v2.3"
+    import: ["@key", "@shareable", "@inaccessible"]
+  )
+
+type Query {
+  me: User
+  teams: [Team]
+}
+
+type Mutation {
+  updateUsername(input: UpdateUsernameInput!): User
+}
+
+input UpdateUsernameInput {
+  id: ID!
+  username: String!
+}
+
+interface Node {
+  id: ID!
+}
+
+type User implements Node @key(fields: "id") {
+  id: ID!
+  username: String @shareable
+  secret: String @inaccessible
+  balance: Money
+}
+
+type Org @key(fields: "id") {
+  id: ID!
+  name: String
+}
+
+type Team @key(fields: "slug org { id }") {
+  slug: String!
+  org: Org!
+  name: String
+}
+
+type Money @shareable {
+  amount: Int!
+  currency: String!
+}

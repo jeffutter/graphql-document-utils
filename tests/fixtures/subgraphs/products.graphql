@@ -1,0 +1,52 @@
+extend schema
+  @link(
+    url: "https://specs.apollo.dev/federation/v2.3"
+    import: ["@key", "@shareable"]
+  )
+
+type Query {
+  topProducts(first: Int = 5): [Product]
+  search(term: String!): [SearchResult]
+  media: [Media]
+}
+
+interface Node {
+  id: ID!
+}
+
+type Product implements Node @key(fields: "upc") {
+  id: ID!
+  upc: String!
+  name: String
+  weight: Int
+  price: Money
+  kind: ProductKind
+  seller: User
+}
+
+type User @key(fields: "id", resolvable: false) {
+  id: ID!
+}
+
+type Money @shareable {
+  amount: Int!
+  currency: String!
+}
+
+enum ProductKind {
+  BOOK
+  MUSIC
+}
+
+union SearchResult = Product
+
+interface Media @key(fields: "id") {
+  id: ID!
+  title: String
+}
+
+type Book implements Media @key(fields: "id") {
+  id: ID!
+  title: String
+  pages: Int
+}

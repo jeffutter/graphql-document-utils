@@ -1,0 +1,185 @@
+# Composed from subgraphs/*.graphql by Apollo Federation 2.7.0 composition
+# (rover's supergraph-v2.7.0 plugin). Regenerate it rather than editing it.
+
+schema
+  @link(url: "https://specs.apollo.dev/link/v1.0")
+  @link(url: "https://specs.apollo.dev/join/v0.4", for: EXECUTION)
+  @link(url: "https://specs.apollo.dev/inaccessible/v0.2", for: SECURITY)
+{
+  query: Query
+  mutation: Mutation
+}
+
+directive @inaccessible on FIELD_DEFINITION | OBJECT | INTERFACE | UNION | ARGUMENT_DEFINITION | SCALAR | ENUM | ENUM_VALUE | INPUT_OBJECT | INPUT_FIELD_DEFINITION
+
+directive @join__directive(graphs: [join__Graph!], name: String!, args: join__DirectiveArguments) repeatable on SCHEMA | OBJECT | INTERFACE | FIELD_DEFINITION
+
+directive @join__enumValue(graph: join__Graph!) repeatable on ENUM_VALUE
+
+directive @join__field(graph: join__Graph, requires: join__FieldSet, provides: join__FieldSet, type: String, external: Boolean, override: String, usedOverridden: Boolean, overrideLabel: String) repeatable on FIELD_DEFINITION | INPUT_FIELD_DEFINITION
+
+directive @join__graph(name: String!, url: String!) on ENUM_VALUE
+
+directive @join__implements(graph: join__Graph!, interface: String!) repeatable on OBJECT | INTERFACE
+
+directive @join__type(graph: join__Graph!, key: join__FieldSet, extension: Boolean! = false, resolvable: Boolean! = true, isInterfaceObject: Boolean! = false) repeatable on OBJECT | INTERFACE | UNION | ENUM | INPUT_OBJECT | SCALAR
+
+directive @join__unionMember(graph: join__Graph!, member: String!) repeatable on UNION
+
+directive @link(url: String, as: String, for: link__Purpose, import: [link__Import]) repeatable on SCHEMA
+
+type Book implements Media
+  @join__implements(graph: PRODUCTS, interface: "Media")
+  @join__type(graph: PRODUCTS, key: "id")
+{
+  id: ID!
+  title: String
+  pages: Int
+  reviews: [Review] @join__field
+}
+
+scalar join__DirectiveArguments
+
+scalar join__FieldSet
+
+enum join__Graph {
+  ACCOUNTS @join__graph(name: "accounts", url: "http://accounts.example")
+  PRODUCTS @join__graph(name: "products", url: "http://products.example")
+  REVIEWS @join__graph(name: "reviews", url: "http://reviews.example")
+}
+
+scalar link__Import
+
+enum link__Purpose {
+  """
+  `SECURITY` features provide metadata necessary to securely resolve fields.
+  """
+  SECURITY
+
+  """
+  `EXECUTION` features provide metadata necessary for operation execution.
+  """
+  EXECUTION
+}
+
+interface Media
+  @join__type(graph: PRODUCTS, key: "id")
+  @join__type(graph: REVIEWS, key: "id", isInterfaceObject: true)
+{
+  id: ID!
+  title: String @join__field(graph: PRODUCTS)
+  reviews: [Review] @join__field(graph: REVIEWS)
+}
+
+type Money
+  @join__type(graph: ACCOUNTS)
+  @join__type(graph: PRODUCTS)
+{
+  amount: Int!
+  currency: String!
+}
+
+type Mutation
+  @join__type(graph: ACCOUNTS)
+{
+  updateUsername(input: UpdateUsernameInput!): User
+}
+
+interface Node
+  @join__type(graph: ACCOUNTS)
+  @join__type(graph: PRODUCTS)
+{
+  id: ID!
+}
+
+type Org
+  @join__type(graph: ACCOUNTS, key: "id")
+  @join__type(graph: REVIEWS, key: "id", resolvable: false)
+{
+  id: ID!
+  name: String @join__field(graph: ACCOUNTS)
+}
+
+type Product implements Node
+  @join__implements(graph: PRODUCTS, interface: "Node")
+  @join__type(graph: PRODUCTS, key: "upc")
+  @join__type(graph: REVIEWS, key: "upc")
+{
+  id: ID! @join__field(graph: PRODUCTS)
+  upc: String!
+  name: String @join__field(graph: PRODUCTS, overrideLabel: "percent(50)") @join__field(graph: REVIEWS, override: "products", overrideLabel: "percent(50)")
+  weight: Int @join__field(graph: PRODUCTS) @join__field(graph: REVIEWS, external: true)
+  price: Money @join__field(graph: PRODUCTS)
+  kind: ProductKind @join__field(graph: PRODUCTS)
+  seller: User @join__field(graph: PRODUCTS)
+  shipping: Int @join__field(graph: REVIEWS, requires: "weight")
+  reviews: [Review] @join__field(graph: REVIEWS)
+}
+
+enum ProductKind
+  @join__type(graph: PRODUCTS)
+  @join__type(graph: REVIEWS)
+{
+  BOOK @join__enumValue(graph: PRODUCTS) @join__enumValue(graph: REVIEWS)
+  MUSIC @join__enumValue(graph: PRODUCTS)
+  VIDEO @join__enumValue(graph: REVIEWS)
+}
+
+type Query
+  @join__type(graph: ACCOUNTS)
+  @join__type(graph: PRODUCTS)
+  @join__type(graph: REVIEWS)
+{
+  me: User @join__field(graph: ACCOUNTS)
+  teams: [Team] @join__field(graph: ACCOUNTS)
+  topProducts(first: Int = 5): [Product] @join__field(graph: PRODUCTS)
+  search(term: String!): [SearchResult] @join__field(graph: PRODUCTS)
+  media: [Media] @join__field(graph: PRODUCTS)
+  review(id: ID!): Review @join__field(graph: REVIEWS)
+}
+
+type Review
+  @join__type(graph: REVIEWS)
+{
+  body: String
+  kind: ProductKind
+  author: User @join__field(graph: REVIEWS, provides: "username")
+  product: Product
+}
+
+union SearchResult
+  @join__type(graph: PRODUCTS)
+  @join__type(graph: REVIEWS)
+  @join__unionMember(graph: PRODUCTS, member: "Product")
+  @join__unionMember(graph: REVIEWS, member: "Review")
+ = Product | Review
+
+type Team
+  @join__type(graph: ACCOUNTS, key: "slug org { id }")
+  @join__type(graph: REVIEWS, key: "slug org { id }")
+{
+  slug: String!
+  org: Org!
+  name: String @join__field(graph: ACCOUNTS)
+  rating: Int @join__field(graph: REVIEWS)
+}
+
+input UpdateUsernameInput
+  @join__type(graph: ACCOUNTS)
+{
+  id: ID!
+  username: String!
+}
+
+type User implements Node
+  @join__implements(graph: ACCOUNTS, interface: "Node")
+  @join__type(graph: ACCOUNTS, key: "id")
+  @join__type(graph: PRODUCTS, key: "id", resolvable: false)
+  @join__type(graph: REVIEWS, key: "id")
+{
+  id: ID!
+  username: String @join__field(graph: ACCOUNTS) @join__field(graph: REVIEWS, external: true)
+  secret: String @inaccessible @join__field(graph: ACCOUNTS)
+  balance: Money @join__field(graph: ACCOUNTS)
+  reviews: [Review] @join__field(graph: REVIEWS)
+}

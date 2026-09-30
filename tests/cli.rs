@@ -28,6 +28,14 @@ const SCHEMA: &str = "type Query { user: User }\ntype User { id: ID name: String
 
 const QUERY: &str = "{ user { name } }\n";
 
+/// A supergraph of the subgraphs `a` and `b`, for `schema subgraph` and
+/// `schema split`.
+const SUPERGRAPH: &str = r#"schema @link(url: "https://specs.apollo.dev/link/v1.0") @link(url: "https://specs.apollo.dev/join/v0.5", for: EXECUTION) { query: Query }
+enum join__Graph { A @join__graph(name: "a", url: "http://a") B @join__graph(name: "b", url: "http://b") }
+type Query @join__type(graph: A) @join__type(graph: B) { user: User @join__field(graph: A) users: [User] @join__field(graph: B) }
+type User @join__type(graph: A, key: "id") @join__type(graph: B, key: "id") { id: ID! name: String @join__field(graph: A) }
+"#;
+
 /// A file in a scratch directory unique to one test.
 fn scratch_file(test: &str, name: &str, contents: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -308,6 +316,8 @@ fn a_schema_from_a_terminal_is_a_usage_error() {
         &["schema", "sort", "-s", "-"][..],
         &["schema", "focus", "User"][..],
         &["schema", "prune", "-q", query][..],
+        &["schema", "subgraph", "a"][..],
+        &["schema", "split", "-o", "never-made"][..],
     ] {
         let Some(output) = run_with_terminal_stdin(args) else {
             return;
@@ -349,12 +359,16 @@ fn a_blank_schema_passes_through_every_schema_command() {
     let blank = blank.to_str().unwrap();
     let query = query_file("blank-schema");
     let query = query.to_str().unwrap();
+    let out = PathBuf::from(blank).with_file_name("out");
+    let out = out.to_str().unwrap();
 
     for args in [
         &["schema", "format"][..],
         &["schema", "sort"][..],
         &["schema", "focus", "User"][..],
         &["schema", "prune", "-q", query][..],
+        &["schema", "subgraph", "a"][..],
+        &["schema", "split", "-o", out][..],
     ] {
         for output in [
             run_with_open_stdin(&[args, &["-s", blank]].concat()),
@@ -364,6 +378,8 @@ fn a_blank_schema_passes_through_every_schema_command() {
             assert_eq!(success(output), "", "{args:?}");
         }
     }
+    // `schema split` wrote nothing, not even its directory.
+    assert!(!PathBuf::from(out).exists());
 }
 
 /// `schema focus` emits nothing only for a blank schema, which the next
@@ -576,6 +592,8 @@ fn every_help_states_the_output_conventions() {
         &["schema", "focus"][..],
         &["schema", "prune"][..],
         &["schema", "sort"][..],
+        &["schema", "split"][..],
+        &["schema", "subgraph"][..],
     ] {
         for flag in ["-h", "--help"] {
             let help = success(run_with_open_stdin(&[command, &[flag]].concat()));
@@ -684,6 +702,16 @@ fn bad_input_exits_1() {
             &["query", "strip", "-s", schema, "Usr"][..],
             QUERY,
             &format!("error: unknown type `Usr` in '{schema}'; did you mean `User`?\n"),
+        ),
+        (
+            &["schema", "subgraph", "a"][..],
+            SCHEMA,
+            "error: schema (stdin) is not a supergraph; `schema subgraph` and `schema split` take one composed by Apollo Federation 2, whose `schema` links the join spec with `@link`\n",
+        ),
+        (
+            &["schema", "subgraph", "A"][..],
+            SUPERGRAPH,
+            "error: unknown subgraph `A` in (stdin); did you mean `a`? Its subgraphs are `a` and `b`\n",
         ),
     ] {
         let output = run_with_input(args, input);
@@ -870,12 +898,14 @@ fn focusing_before_pruning_leaves_nothing() {
     assert_eq!(success(output), "");
 }
 
-/// Every command only prints: the files it reads are left as they were, and
-/// none is added beside them.
+/// Every command but `schema split` only prints: the files it reads are left
+/// as they were, and none is added beside them. `schema split` writes only
+/// where it is told to (`split_writes_only_inside_its_directory`).
 #[test]
 fn no_command_changes_a_file() {
     let schema = schema_file("changes-no-file");
     let query = query_file("changes-no-file");
+    let supergraph = scratch_file("changes-no-file", "supergraph.graphql", SUPERGRAPH);
     let dir = schema.parent().unwrap();
     let listing = || {
         let mut files: Vec<_> = fs::read_dir(dir)
@@ -891,6 +921,7 @@ fn no_command_changes_a_file() {
     };
     let before = listing();
     let (schema, query) = (schema.to_str().unwrap(), query.to_str().unwrap());
+    let supergraph = supergraph.to_str().unwrap();
 
     for args in [
         &["query", "normalize", "-q", query][..],
@@ -900,6 +931,7 @@ fn no_command_changes_a_file() {
         &["schema", "sort", "-s", schema][..],
         &["schema", "focus", "-s", schema, "User"][..],
         &["schema", "prune", "-s", schema, "-q", query][..],
+        &["schema", "subgraph", "-s", supergraph, "a"][..],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_graphql-document-utils"))
             .args(args)
@@ -911,6 +943,48 @@ fn no_command_changes_a_file() {
         assert!(!output.stdout.is_empty(), "{args:?}");
     }
     assert_eq!(listing(), before);
+}
+
+/// `schema split` writes a file per subgraph into the directory `-o` names,
+/// relative to where it runs, and nothing else: its input is left as it was,
+/// nothing goes beside it, and stdout stays empty.
+#[test]
+fn split_writes_only_inside_its_directory() {
+    let supergraph = scratch_file("split-writes", "supergraph.graphql", SUPERGRAPH);
+    let dir = supergraph.parent().unwrap();
+    let _ = fs::remove_dir_all(dir.join("out"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_graphql-document-utils"))
+        .args(["schema", "split", "-s", "supergraph.graphql", "-o", "out"])
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        stderr(&output),
+        "note: wrote out/a.graphql\nnote: wrote out/b.graphql\n"
+    );
+    let mut beside: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    beside.sort();
+    assert_eq!(beside, ["out", "supergraph.graphql"]);
+    assert_eq!(fs::read_to_string(&supergraph).unwrap(), SUPERGRAPH);
+    let mut written: Vec<_> = fs::read_dir(dir.join("out"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    written.sort();
+    assert_eq!(written, ["a.graphql", "b.graphql"]);
+    let a = fs::read_to_string(dir.join("out/a.graphql")).unwrap();
+    assert!(
+        a.contains("type User @key(fields: \"id\") {\n  id: ID!\n  name: String\n}"),
+        "{a}"
+    );
 }
 
 /// A command reads a pipe until it closes, however long that takes, as a

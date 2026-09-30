@@ -1,3 +1,4 @@
+use crate::supergraph::Supergraph;
 use graphql_parser::query::{
     Directive, Mutation, OperationDefinition, Query, SelectionSet, Subscription, Text,
     TypeCondition, Value, VariableDefinition,
@@ -294,6 +295,28 @@ fn has_no_members(td: &TypeDefinition<'_, String>) -> bool {
     }
 }
 
+/// The field a type keeps when it must keep one and nothing says which: the
+/// first of `fields` that returns a scalar or enum and takes no arguments,
+/// falling back to the first that returns one, then the first that takes
+/// none, then the first. That is the one that brings the least with it.
+pub fn smallest_field<'r, 'a: 'r>(
+    type_map: &HashMap<String, TypeDefinition<'a, String>>,
+    fields: impl IntoIterator<Item = &'r Field<'a, String>>,
+) -> Option<&'r Field<'a, String>> {
+    let composite = |name: &String| {
+        matches!(
+            type_map.get(name),
+            Some(
+                TypeDefinition::Object(_) | TypeDefinition::Interface(_) | TypeDefinition::Union(_)
+            )
+        )
+    };
+    fields.into_iter().min_by_key(|f| {
+        let returns_composite = named_type(&f.field_type).is_some_and(composite);
+        (returns_composite, !f.arguments.is_empty())
+    })
+}
+
 /// Returns the part of `schema` that the `types` and `directives` named need
 /// in order to stand on their own, so no retained definition names one that
 /// was dropped.
@@ -336,6 +359,15 @@ fn has_no_members(td: &TypeDefinition<'_, String>) -> bool {
 /// until it does. The schema definition is kept with only the root operation
 /// types that were retained, and dropped when none were. Everything keeps its
 /// source order.
+///
+/// A supergraph (see `Supergraph::detect`) stays one. Every definition its
+/// linked specs make, such as `join__Graph` and `@join__field`, is kept whole
+/// without passing through `trim`, and the type a `@join__field(type:)`
+/// names is a dependency like any other. The join directives on a trimmed
+/// type are brought in line with it (see `Supergraph::drop_dangling_relations`),
+/// so none says a graph has an interface, member, or type the output lacks.
+/// The field sets they name are the caller's to keep, since which fields a
+/// type keeps is `trim`'s decision.
 pub fn retain_with_dependencies<'a>(
     schema: &Document<'a, String>,
     types: &[&str],
@@ -343,6 +375,12 @@ pub fn retain_with_dependencies<'a>(
     trim: impl Fn(&TypeDefinition<'a, String>) -> TypeDefinition<'a, String>,
 ) -> Document<'a, String> {
     let type_index = merged_type_definitions(schema);
+    let supergraph = Supergraph::detect(schema);
+    let is_machinery_type = |name: &str| {
+        supergraph
+            .as_ref()
+            .is_some_and(|sg| sg.is_machinery_type(name))
+    };
 
     // Every type is trimmed up front, not just the ones reached, because
     // whether a type survives depends on whether the types it names do, and a
@@ -350,7 +388,14 @@ pub fn retain_with_dependencies<'a>(
     // What is left is what each type keeps if retained.
     let mut trimmed: HashMap<String, TypeDefinition<'a, String>> = type_index
         .iter()
-        .map(|(name, td)| (name.clone(), trim(td)))
+        .map(|(name, td)| {
+            let td = if is_machinery_type(name) {
+                td.clone()
+            } else {
+                trim(td)
+            };
+            (name.clone(), td)
+        })
         .collect();
     let mut removed: HashSet<String> = HashSet::new();
     loop {
@@ -390,6 +435,18 @@ pub fn retain_with_dependencies<'a>(
             }
         }
     }
+    if let Some(sg) = &supergraph {
+        // Every subgraph has a query root, if only for the `_service` field
+        // federation adds to it, so composition joins that type to every
+        // graph, and so does the output, whatever fields the root keeps.
+        let query_root = detect_root_types(schema).query;
+        let graphs = sg.graphs(&type_index);
+        for (name, td) in trimmed.iter_mut() {
+            if *name != query_root {
+                sg.drop_dangling_relations(td, &graphs);
+            }
+        }
+    }
 
     let mut directive_index = HashMap::new();
     let mut schema_definition = None;
@@ -409,6 +466,22 @@ pub fn retain_with_dependencies<'a>(
         types: types.iter().map(|name| name.to_string()).collect(),
         directives: directives.iter().map(|name| name.to_string()).collect(),
     };
+    // A supergraph keeps every definition its linked specs make, whether or
+    // not what is kept applies them, so it still reads as one.
+    if let Some(sg) = &supergraph {
+        pending.types.extend(
+            type_index
+                .keys()
+                .filter(|name| sg.is_machinery_type(name))
+                .cloned(),
+        );
+        pending.directives.extend(
+            directive_index
+                .keys()
+                .filter(|name| sg.is_machinery_directive(name))
+                .map(|name| name.to_string()),
+        );
+    }
     let mut schema_definition_kept = false;
 
     // A retained type can apply a directive whose arguments name further types,
@@ -421,6 +494,9 @@ pub fn retain_with_dependencies<'a>(
                 continue;
             };
             pending.type_definition(&td);
+            if let Some(sg) = &supergraph {
+                pending.types.extend(sg.named_types(&td));
+            }
             kept_types.insert(name, td);
         }
 
@@ -615,7 +691,7 @@ fn surviving<T: Clone>(own: &[T], kept: &[T], same: impl Fn(&T, &T) -> bool) -> 
 /// Reads an extension as the definition it would be on its own. The two differ
 /// only in that an extension has no description, so treating extensions as
 /// definitions lets merging, trimming, and reference walking handle both alike.
-fn extension_as_definition<'a>(te: &TypeExtension<'a, String>) -> TypeDefinition<'a, String> {
+pub fn extension_as_definition<'a>(te: &TypeExtension<'a, String>) -> TypeDefinition<'a, String> {
     match te.clone() {
         TypeExtension::Scalar(ext) => TypeDefinition::Scalar(ScalarType {
             position: ext.position,
@@ -665,7 +741,7 @@ fn extension_as_definition<'a>(te: &TypeExtension<'a, String>) -> TypeDefinition
 
 /// The inverse of `extension_as_definition`, or `None` when the definition has
 /// nothing to extend with, since an empty `extend` block does not parse.
-fn definition_as_extension<'a>(
+pub fn definition_as_extension<'a>(
     td: TypeDefinition<'a, String>,
 ) -> Option<TypeExtension<'a, String>> {
     let extension = match td {
@@ -728,7 +804,7 @@ fn definition_as_extension<'a>(
 
 // Unlike `schema_type_definition_name`, these do not tie the borrow to the AST
 // lifetime, which a trimmed copy of a definition does not live for.
-fn type_definition_name<'r>(td: &'r TypeDefinition<'_, String>) -> &'r String {
+pub fn type_definition_name<'r>(td: &'r TypeDefinition<'_, String>) -> &'r String {
     match td {
         TypeDefinition::Scalar(scalar_type) => &scalar_type.name,
         TypeDefinition::Object(object_type) => &object_type.name,
@@ -902,6 +978,68 @@ pub fn assert_no_empty_definitions(schema: &str) {
         empty.is_empty(),
         "schema has empty definitions {empty:?}:\n{schema}"
     );
+}
+
+/// Asserts that `schema` is a supergraph consistent with itself: it passes
+/// `assert_self_contained` and `assert_no_empty_definitions`, has a query root
+/// object type, every field a key, `requires`, or `provides` names is defined
+/// on the type it names it on, and every `@join__implements` and
+/// `@join__unionMember` names an interface the type implements or a member the
+/// union has. Shared by the tests of the commands that emit a supergraph.
+/// Whether one also composes is not checked here: that needs Apollo's
+/// composition, which CONTRIBUTING.md describes running by hand.
+#[cfg(test)]
+pub fn assert_valid_supergraph(schema: &str) {
+    use crate::supergraph::{string_argument, type_directives};
+
+    assert_self_contained(schema);
+    assert_no_empty_definitions(schema);
+    let doc = graphql_parser::parse_schema::<String>(schema).unwrap();
+    let sg =
+        Supergraph::detect(&doc).unwrap_or_else(|| panic!("output is not a supergraph:\n{schema}"));
+    let types = merged_type_definitions(&doc);
+
+    let root = detect_root_types(&doc).query;
+    assert!(
+        matches!(types.get(&root), Some(TypeDefinition::Object(_))),
+        "supergraph lacks its query root type {root}:\n{schema}"
+    );
+
+    let field_sets = sg
+        .field_sets(&types)
+        .unwrap_or_else(|err| panic!("{err}:\n{schema}"));
+    for field_set in &field_sets {
+        for (type_name, field) in sg.field_set_fields(&types, field_set, None) {
+            let defined = types
+                .get(&type_name)
+                .and_then(type_fields)
+                .is_some_and(|fields| fields.iter().any(|f| f.name == field));
+            assert!(
+                defined,
+                "a field set on {} names {type_name}.{field}, which is not defined:\n{schema}",
+                field_set.type_name
+            );
+        }
+    }
+
+    for (name, td) in &types {
+        let (relations, element, argument) = match td {
+            TypeDefinition::Object(obj) => (&obj.implements_interfaces, "implements", "interface"),
+            TypeDefinition::Interface(iface) => {
+                (&iface.implements_interfaces, "implements", "interface")
+            }
+            TypeDefinition::Union(union) => (&union.types, "unionMember", "member"),
+            _ => continue,
+        };
+        for join in sg.joins(type_directives(td), element) {
+            let named = string_argument(join, argument);
+            assert!(
+                named.is_some_and(|named| relations.iter().any(|r| r == named)),
+                "{name} has a `@{}` naming {named:?}, which it lacks:\n{schema}",
+                join.name
+            );
+        }
+    }
 }
 
 #[cfg(test)]

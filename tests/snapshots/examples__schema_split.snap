@@ -1,171 +1,7 @@
 ---
 source: tests/examples.rs
-expression: transcript(&common_tasks())
+expression: transcript(&examples)
 ---
-$ graphql-document-utils query normalize -q query.graphql
-exit: 0
-stdout:
-query GetUser($filter: SearchFilter, $first: Int, $id: ID!) {
-  company {
-    employees(first: $first) {
-      name
-    }
-  }
-  search(filter: $filter) {
-    __typename
-    ... on Company {
-      name
-    }
-    ... on User {
-      email
-    }
-  }
-  user(id: $id) {
-    name
-    profile {
-      avatar {
-        url
-      }
-      bio
-    }
-  }
-}
-
-$ graphql-document-utils query focus -s schema.graphql -q query.graphql User.email
-exit: 0
-stdout:
-query GetUser($filter: SearchFilter) {
-  search(filter: $filter) {
-    ... on User {
-      email
-    }
-  }
-}
-
-$ graphql-document-utils query strip -s schema.graphql -q query.graphql Profile
-exit: 0
-stdout:
-query GetUser($id: ID!, $first: Int, $filter: SearchFilter) {
-  user(id: $id) {
-    name
-  }
-  company {
-    employees(first: $first) {
-      name
-    }
-  }
-  search(filter: $filter) {
-    __typename
-    ... on User {
-      email
-    }
-    ... on Company {
-      name
-    }
-  }
-}
-
-$ graphql-document-utils schema prune -s schema.graphql -q query.graphql
-exit: 0
-stdout:
-type Query {
-  user(id: ID!): User
-  company: Company
-  search(filter: SearchFilter): [SearchResult]
-}
-
-type User {
-  name: String
-  email: String
-  profile: Profile
-}
-
-type Profile {
-  bio: String
-  avatar: Avatar
-}
-
-type Avatar {
-  url: String
-}
-
-type Company {
-  name: String
-  employees(first: Int): [User]
-}
-
-union SearchResult = User | Company
-
-input SearchFilter {
-  term: String
-}
-
-$ graphql-document-utils schema focus -s schema.graphql User
-exit: 0
-stdout:
-"Anything with a global ID."
-interface Node {
-  id: ID!
-}
-
-type User implements Node {
-  id: ID!
-  name: String
-  email: String
-  profile: Profile
-}
-
-type Profile {
-  bio: String
-  avatar: Avatar
-}
-
-type Avatar {
-  url: String
-}
-
-$ graphql-document-utils schema sort -s schema.graphql
-exit: 0
-stdout:
-type Avatar {
-  url: String
-}
-
-type Company implements Node {
-  id: ID!
-  name: String
-  employees(first: Int): [User]
-}
-
-"Anything with a global ID."
-interface Node {
-  id: ID!
-}
-
-type Profile {
-  bio: String
-  avatar: Avatar
-}
-
-type Query {
-  user(id: ID!): User
-  company: Company
-  search(filter: SearchFilter): [SearchResult]
-}
-
-input SearchFilter {
-  term: String
-}
-
-union SearchResult = User | Company
-
-type User implements Node {
-  id: ID!
-  name: String
-  email: String
-  profile: Profile
-}
-
 $ graphql-document-utils schema split -s supergraph.graphql -o subgraphs
 exit: 0
 stderr:
@@ -321,21 +157,39 @@ type User @key(fields: "id") {
   reviews: [Review]
 }
 
-$ graphql-document-utils schema subgraph -s supergraph.graphql reviews
-exit: 0
-stdout:
-schema @link(url: "https://specs.apollo.dev/federation/v2.7", import: ["@key", "@external", "@requires", "@provides", "@override", "@interfaceObject"]) {
+$ graphql-document-utils schema prune -s supergraph.graphql -q supergraph-query.graphql | graphql-document-utils schema split -o subgraphs
+exit: 0 | 0
+stderr:
+note: wrote subgraphs/accounts.graphql
+note: wrote subgraphs/products.graphql
+note: wrote subgraphs/reviews.graphql
+wrote subgraphs/accounts.graphql:
+extend schema @link(url: "https://specs.apollo.dev/federation/v2.0", import: ["@key", "@shareable"])
+
+type User @key(fields: "id") {
+  id: ID!
+  username: String @shareable
+}
+wrote subgraphs/products.graphql:
+schema @link(url: "https://specs.apollo.dev/federation/v2.0", import: ["@key"]) {
   query: Query
 }
 
-type Media @key(fields: "id") @interfaceObject {
-  id: ID!
-  reviews: [Review]
+type Product @key(fields: "upc") {
+  upc: String!
+  name: String
+  weight: Int
 }
 
-type Org @key(fields: "id", resolvable: false) {
+type Query {
+  topProducts(first: Int = 5): [Product]
+}
+
+type User @key(fields: "id", resolvable: false) {
   id: ID!
 }
+wrote subgraphs/reviews.graphql:
+extend schema @link(url: "https://specs.apollo.dev/federation/v2.7", import: ["@key", "@external", "@requires", "@provides", "@override"])
 
 type Product @key(fields: "upc") {
   upc: String!
@@ -345,32 +199,12 @@ type Product @key(fields: "upc") {
   reviews: [Review]
 }
 
-enum ProductKind {
-  BOOK
-  VIDEO
-}
-
-type Query {
-  review(id: ID!): Review
-}
-
 type Review {
   body: String
-  kind: ProductKind
   author: User @provides(fields: "username")
-  product: Product
-}
-
-union SearchResult = Review
-
-type Team @key(fields: "slug org { id }") {
-  slug: String!
-  org: Org!
-  rating: Int
 }
 
 type User @key(fields: "id") {
   id: ID!
   username: String @external
-  reviews: [Review]
 }

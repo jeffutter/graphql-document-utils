@@ -1,7 +1,8 @@
 # GraphQL Document Utilities
 
 `graphql-document-utils` rewrites GraphQL documents from the command line:
-normalize, focus, and strip queries; format, sort, focus, and prune schemas.
+normalize, focus, and strip queries; format, sort, focus, and prune schemas;
+and split an Apollo Federation supergraph into its subgraph schemas.
 
 For agents: `graphql-document-utils skill` prints a complete usage guide.
 
@@ -20,6 +21,10 @@ graphql-document-utils schema prune -s schema.graphql -q query.graphql
 graphql-document-utils schema focus -s schema.graphql User
 # Sort and format a schema
 graphql-document-utils schema sort -s schema.graphql
+# Split a supergraph into the schemas of its subgraphs
+graphql-document-utils schema split -s supergraph.graphql -o subgraphs
+# Extract one subgraph's schema from a supergraph
+graphql-document-utils schema subgraph -s supergraph.graphql reviews
 ```
 
 Run `graphql-document-utils <noun> <verb> --help` for every rule a command
@@ -60,6 +65,9 @@ noun is `query` or `schema`.
    - Pass `query focus` and `query strip` the schema too, with `-s FILE`.
    - Pass `schema prune` the query too, with `-q FILE`. To pipe the query in,
      pass `-q -` and the schema with `-s FILE`.
+   - A schema can be an Apollo Federation supergraph. `schema focus` and
+     `schema prune` keep it one, and `query focus` and `query strip` read the
+     API schema its clients see.
 3. Pass targets to `query focus`, `query strip`, and `schema focus` as
    positional arguments.
    - Pass `query focus` and `query strip` types (`Profile`) or fields on a
@@ -82,7 +90,12 @@ noun is `query` or `schema`.
      empties, and an operation it empties.
    - `query strip` removes a field or directive whose required input it
      removes.
-4. Redirect stdout to a file to save the result.
+   - Pass `schema subgraph` the name of one subgraph, as the supergraph's
+     `@join__graph(name:)` gives it. An unknown name exits 1, listing the
+     names there are.
+4. Redirect stdout to a file to save the result. `schema split` writes its
+   own files instead, one per subgraph in its `-o` directory, and prints
+   nothing to stdout.
 5. Read the result.
    - Stdout holds only the GraphQL document.
    - Stderr holds `error:`, `warning:`, and `note:` lines.
@@ -354,6 +367,135 @@ graphql-document-utils schema format -s schema.graphql
 graphql-document-utils schema sort -s schema.graphql > sorted.graphql
 ```
 
+### Supergraphs
+
+A schema can be an Apollo Federation 2 supergraph, as a router serves. It is
+found by its `@link` to the join spec, with no flag. `schema focus` and
+`schema prune` keep it a supergraph: the definitions of the specs it links
+stay, and so do the join directives of what they keep. `schema prune` also
+keeps the fields the router fetches to resolve what the query selects, those a
+key, `@requires`, or `@provides` names. `query focus` and `query strip` read
+the API schema its clients see, so the join types and `@inaccessible` fields
+are unknown names.
+
+`schema subgraph` extracts one subgraph's schema, with the federation
+directives it applies read back from the supergraph's join directives. Here
+`supergraph.graphql` is composed from three subgraphs, `accounts`, `products`,
+and `reviews`:
+
+```bash
+graphql-document-utils schema subgraph -s supergraph.graphql accounts
+```
+
+```graphql
+schema @link(url: "https://specs.apollo.dev/federation/v2.0", import: ["@key", "@shareable", "@inaccessible"]) {
+  query: Query
+  mutation: Mutation
+}
+
+type Money @shareable {
+  amount: Int!
+  currency: String!
+}
+
+type Mutation {
+  updateUsername(input: UpdateUsernameInput!): User
+}
+
+interface Node {
+  id: ID!
+}
+
+type Org @key(fields: "id") {
+  id: ID!
+  name: String
+}
+
+type Query {
+  me: User
+  teams: [Team]
+}
+
+type Team @key(fields: "slug org { id }") {
+  slug: String!
+  org: Org!
+  name: String
+}
+
+input UpdateUsernameInput {
+  id: ID!
+  username: String!
+}
+
+type User implements Node @key(fields: "id") {
+  id: ID!
+  username: String @shareable
+  secret: String @inaccessible
+  balance: Money
+}
+```
+
+`schema split` writes every subgraph to `<name>.graphql` in the `-o`
+directory, creating it if missing, and replaces those files but no other:
+
+```bash
+graphql-document-utils schema split -s supergraph.graphql -o subgraphs
+```
+
+Prune first to see the part of each subgraph a query uses. With this query,
+`supergraph-query.graphql`:
+
+```graphql
+query TopProducts {
+  topProducts(first: 3) {
+    name
+    shipping
+    reviews {
+      body
+      author {
+        username
+      }
+    }
+  }
+}
+```
+
+the `reviews` subgraph keeps what it resolves for it, and the keys and
+`@requires` fields the router fetches from it:
+
+```bash
+graphql-document-utils schema prune -s supergraph.graphql -q supergraph-query.graphql \
+  | graphql-document-utils schema subgraph reviews
+```
+
+```graphql
+extend schema @link(url: "https://specs.apollo.dev/federation/v2.7", import: ["@key", "@external", "@requires", "@provides", "@override"])
+
+type Product @key(fields: "upc") {
+  upc: String!
+  name: String @override(from: "products", label: "percent(50)")
+  weight: Int @external
+  shipping: Int @requires(fields: "weight")
+  reviews: [Review]
+}
+
+type Review {
+  body: String
+  author: User @provides(fields: "username")
+}
+
+type User @key(fields: "id") {
+  id: ID!
+  username: String @external
+}
+```
+
+A supergraph does not record everything its subgraphs said, so some of it is
+lost: how a subgraph named its root types, arguments it declared differently
+than composition merged them, and directives composition did not keep. What
+it can, such as `@shareable`, is rebuilt. A subgraph with no root types, like
+`reviews` above, opens with `extend schema`, which this tool cannot read back.
+
 ### Pipelines
 
 Stdin holds one document, so in a pipeline the other document is a file:
@@ -383,8 +525,10 @@ Prune before focusing: `schema focus User` drops `Query`, which leaves
 - `1`: bad input, or output that cannot be written: an unreadable file, a parse
   error (with line and column), a blank schema for `query focus` or
   `query strip`, a malformed target (or a file passed as one), an unknown type
-  or field, a field or built-in scalar given to `schema focus`, or a failed
-  write to stdout (as on a full disk).
+  or field, a field or built-in scalar given to `schema focus`, a schema that is
+  not a supergraph given to `schema subgraph` or `split`, an unknown subgraph
+  name, an invalid or Federation 1 supergraph, a failed write to stdout (as on a
+  full disk), or a file `schema split` cannot write.
 - `2`: usage error: an unknown command or flag, a missing flag or targets, no
   document to read (no flag, and stdin a terminal), or both of `schema prune`'s
   documents on stdin.

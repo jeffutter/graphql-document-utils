@@ -85,6 +85,78 @@ type User implements Node {
   profile: Profile
 }
 
+$ graphql-document-utils schema subgraph -s supergraph.graphql accounts
+exit: 0
+stdout:
+schema @link(url: "https://specs.apollo.dev/federation/v2.0", import: ["@key", "@shareable", "@inaccessible"]) {
+  query: Query
+  mutation: Mutation
+}
+
+type Money @shareable {
+  amount: Int!
+  currency: String!
+}
+
+type Mutation {
+  updateUsername(input: UpdateUsernameInput!): User
+}
+
+interface Node {
+  id: ID!
+}
+
+type Org @key(fields: "id") {
+  id: ID!
+  name: String
+}
+
+type Query {
+  me: User
+  teams: [Team]
+}
+
+type Team @key(fields: "slug org { id }") {
+  slug: String!
+  org: Org!
+  name: String
+}
+
+input UpdateUsernameInput {
+  id: ID!
+  username: String!
+}
+
+type User implements Node @key(fields: "id") {
+  id: ID!
+  username: String @shareable
+  secret: String @inaccessible
+  balance: Money
+}
+
+$ graphql-document-utils schema prune -s supergraph.graphql -q supergraph-query.graphql | graphql-document-utils schema subgraph reviews
+exit: 0 | 0
+stdout:
+extend schema @link(url: "https://specs.apollo.dev/federation/v2.7", import: ["@key", "@external", "@requires", "@provides", "@override"])
+
+type Product @key(fields: "upc") {
+  upc: String!
+  name: String @override(from: "products", label: "percent(50)")
+  weight: Int @external
+  shipping: Int @requires(fields: "weight")
+  reviews: [Review]
+}
+
+type Review {
+  body: String
+  author: User @provides(fields: "username")
+}
+
+type User @key(fields: "id") {
+  id: ID!
+  username: String @external
+}
+
 $ cat query.graphql | graphql-document-utils query strip -s schema.graphql SearchFilter | graphql-document-utils query focus -s schema.graphql Profile | graphql-document-utils query normalize -m
 exit: 0 | 0 | 0
 stdout:

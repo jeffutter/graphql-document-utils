@@ -6,6 +6,10 @@
 //! in behavior then shows up as a change to a snapshot, next to the help it
 //! makes wrong.
 //!
+//! A command that writes files, `schema split -o DIR`, writes them to a
+//! fresh temporary directory in place of `DIR`, so the fixtures are never
+//! written to, and its snapshot holds each file it wrote.
+//!
 //! The README's sample documents are the fixtures, byte for byte, and each
 //! output it shows is what the command above it prints, so neither can go
 //! stale.
@@ -91,20 +95,28 @@ fn glob(pattern: &str) -> Vec<PathBuf> {
 }
 
 /// What a command printed: the status of each invocation of the binary in it,
-/// their stderr in order, and the last stage's stdout.
+/// their stderr in order, the last stage's stdout, and the files it wrote, by
+/// the path it was given for them, in sorted order.
 struct Run {
     statuses: Vec<i32>,
     stderr: String,
     stdout: String,
+    written: Vec<(String, String)>,
 }
 
 /// Runs `command` as the shell would, one stage at a time, each stage's stdout
 /// piped to the next one's stdin. A `>` is left to the transcript, which
 /// captures what would have been written, so nothing is.
+///
+/// The directory an `-o` names is made a fresh temporary one, so what the
+/// stage writes lands there, and is read back as written by the path it was
+/// given. Its notes name the temporary directory, which is cut from stderr,
+/// so they name the files as the command line did.
 fn run(command: &str) -> Run {
     let mut piped: Option<Vec<u8>> = None;
     let mut statuses = Vec::new();
     let mut stderr = String::new();
+    let mut written = Vec::new();
     for stage in extract::stages(command) {
         piped = Some(match stage {
             Stage::Cat(patterns) => {
@@ -113,9 +125,32 @@ fn run(command: &str) -> Run {
                 files.flat_map(|file| fs::read(file).unwrap()).collect()
             }
             Stage::Bin(args) => {
+                let mut args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+                let flag = args.iter().position(|arg| arg == "-o" || arg == "--output");
+                let output_dir = flag.map(|flag| {
+                    let temp = tempfile::tempdir().unwrap();
+                    let dir = args[flag + 1].clone();
+                    args[flag + 1] = temp.path().join(&dir).display().to_string();
+                    (temp, dir)
+                });
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 let output = spawn(&args, piped.take());
                 statuses.push(output.status.code().expect("the command exits"));
-                stderr.push_str(&String::from_utf8(output.stderr).unwrap());
+                let mut stage_stderr = String::from_utf8(output.stderr).unwrap();
+                if let Some((temp, dir)) = output_dir {
+                    let root = format!("{}/", temp.path().display());
+                    stage_stderr = stage_stderr.replace(&root, "");
+                    let mut files: Vec<_> = fs::read_dir(temp.path().join(&dir))
+                        .map(|entries| entries.map(|entry| entry.unwrap().path()).collect())
+                        .unwrap_or_default();
+                    files.sort();
+                    for file in files {
+                        let name = file.file_name().unwrap().to_str().unwrap();
+                        let contents = fs::read_to_string(&file).unwrap();
+                        written.push((format!("{dir}/{name}"), contents));
+                    }
+                }
+                stderr.push_str(&stage_stderr);
                 output.stdout
             }
         });
@@ -128,13 +163,14 @@ fn run(command: &str) -> Run {
         statuses,
         stderr,
         stdout: stdout.replace(&version, &format!("{} [version]", extract::BIN)),
+        written,
     }
 }
 
 /// Runs each of `commands` and writes down what it did, for a snapshot. Every
-/// one has to succeed and print something, since an example shows what the
-/// tool is for. A command printing what one before it printed says so rather
-/// than repeating it, which also shows the two agree.
+/// one has to succeed and print or write something, since an example shows
+/// what the tool is for. A command printing what one before it printed says so
+/// rather than repeating it, which also shows the two agree.
 fn transcript(commands: &[String]) -> String {
     let mut transcript = String::new();
     let mut printed: Vec<(&str, String)> = Vec::new();
@@ -143,19 +179,28 @@ fn transcript(commands: &[String]) -> String {
             statuses,
             stderr,
             stdout,
+            written,
         } = run(command);
         assert!(
             statuses.iter().all(|status| *status == 0),
             "{command}\nexits {statuses:?}:\n{stderr}"
         );
-        assert!(!stdout.is_empty(), "{command}\nprints something:\n{stderr}");
+        assert!(
+            !stdout.is_empty() || !written.is_empty(),
+            "{command}\nprints or writes something:\n{stderr}"
+        );
 
         let statuses: Vec<_> = statuses.iter().map(ToString::to_string).collect();
         writeln!(transcript, "$ {command}\nexit: {}", statuses.join(" | ")).unwrap();
         if !stderr.is_empty() {
             write!(transcript, "stderr:\n{stderr}").unwrap();
         }
-        if stdout.trim_end() == skill().trim_end() {
+        for (path, contents) in &written {
+            write!(transcript, "wrote {path}:\n{contents}").unwrap();
+        }
+        if stdout.is_empty() && !written.is_empty() {
+            // Nothing printed, which the files it wrote stand in for.
+        } else if stdout.trim_end() == skill().trim_end() {
             writeln!(transcript, "stdout: the skill, as in {SKILL_SNAPSHOT}").unwrap();
         } else if let Some((earlier, _)) = printed.iter().find(|(_, earlier)| *earlier == stdout) {
             writeln!(transcript, "stdout: as for `{earlier}`").unwrap();

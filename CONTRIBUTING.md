@@ -87,6 +87,11 @@ The binary, in `src/`:
 - `prune.rs`: `schema prune`, which finds the types and fields a query uses,
   then completes them until the result is valid.
 - `sort.rs`: `schema sort`, a stable sort of definitions by category and name.
+- `supergraph.rs`: Apollo Federation supergraphs: detecting one, the parts
+  only federation reads, the field sets its join directives name, and the API
+  schema the query commands resolve against.
+- `subgraph.rs`: `schema subgraph` and `schema split`, which read the
+  subgraph schemas back out of a supergraph's join directives.
 - `util.rs`: shared schema utilities, notably `merged_type_definitions`, the one
   place `extend` blocks are folded into their base types, and
   `retain_with_dependencies`, which adds what a set of kept types needs to
@@ -98,6 +103,41 @@ the normalization behind `query normalize`. `query normalize --minify` is the
 binary's, through `graphql_parser::minify_query`.
 
 [CLAUDE.md](CLAUDE.md) has detailed design notes on each module.
+
+## Checking supergraphs against composition
+
+The tests check that a supergraph the tool emits is consistent with itself,
+but not that Apollo's composition accepts it, since that needs Apollo's
+composition binary, which the build does not download. Check it by hand after
+changing supergraph handling, with rover's `supergraph` plugin (installed by
+`rover supergraph compose` under `~/.rover/bin`). The plugin composes a JSON
+config holding each subgraph's SDL inline:
+
+```bash
+compose() {  # compose DIR: prints the supergraph DIR/*.graphql compose into
+  python3 -c '
+import json, pathlib, sys
+subgraphs = {p.stem: {"routing_url": f"http://{p.stem}.example",
+                      "schema": {"sdl": p.read_text()}}
+             for p in sorted(pathlib.Path(sys.argv[1]).glob("*.graphql"))}
+print(json.dumps({"federation_version": "=2.7.0", "subgraphs": subgraphs}))
+' "$1" > "$TMPDIR/compose.json"
+  ~/.rover/bin/supergraph-v2.7.0 compose "$TMPDIR/compose.json" \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin)["Ok"]["supergraphSdl"])'
+}
+```
+
+`tests/fixtures/supergraph.graphql` is `compose tests/fixtures/subgraphs`
+below its two comment lines; regenerate it that way rather than editing it.
+Splitting it and composing the parts must give it back unchanged:
+
+```bash
+cargo run -q -- schema split -s tests/fixtures/supergraph.graphql -o "$TMPDIR/split"
+diff <(tail -n +4 tests/fixtures/supergraph.graphql) <(compose "$TMPDIR/split")
+```
+
+To check that `schema focus` or `schema prune` output still composes, split it
+and compose the parts the same way.
 
 ## Releasing
 

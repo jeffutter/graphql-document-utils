@@ -19,7 +19,7 @@ use crate::{error::Error, Args};
 /// When the skill applies, which is all an agent sees of it before loading
 /// it, so it lists what someone would ask for rather than what the tool has.
 /// One line, which YAML reads as a plain string as long as it has no `: `.
-const DESCRIPTION: &str = "Transform GraphQL documents from the command line. Use to canonicalize or diff GraphQL queries, cut a query down to the parts that reach a type or field, remove a type or field and everything that references it from a query, prune a schema to what a set of queries uses, extract a type and its dependencies from a schema, or sort and format a schema.";
+const DESCRIPTION: &str = "Transform GraphQL documents from the command line. Use to canonicalize or diff GraphQL queries, cut a query down to the parts that reach a type or field, remove a type or field and everything that references it from a query, prune a schema to what a set of queries uses, extract a type and its dependencies from a schema, sort and format a schema, or do any of these to an Apollo Federation supergraph, split a supergraph into its subgraph schemas, or extract one subgraph from it.";
 
 /// How to run any command, in the order an agent does it. The README's usage
 /// lists the same steps.
@@ -55,6 +55,12 @@ const DESCRIPTION: &str = "Transform GraphQL documents from the command line. Us
 //   `query_strip::drops_operations_left_with_nothing`,
 //   `query_strip::removes_the_field_when_a_required_argument_is_stripped`,
 //   `query_strip::drops_a_directive_that_loses_a_required_argument`
+// - supergraphs: `prune::keeps_the_fields_keys_requires_and_provides_name`,
+//   `focus::test_focus_on_a_supergraph_keeps_its_machinery_and_a_query_root`,
+//   `query_target::a_supergraph_resolves_targets_against_its_api_schema`,
+//   `subgraph::an_unknown_subgraph_suggests_one_and_lists_them_all`
+// - files `schema split` writes: `subgraph::split_writes_each_subgraph_to_a_file_of_its_own`,
+//   `cli::split_writes_only_inside_its_directory`
 // - comments and repeats: `cli::comments_are_dropped_and_descriptions_kept`,
 //   `cli::a_repeated_definition_warns_and_the_first_is_used`,
 //   `cli::only_the_commands_that_lay_a_document_out_keep_repeats`
@@ -73,6 +79,9 @@ const STEPS: &str = "\
    - Pass `query focus` and `query strip` the schema too, with `-s FILE`.
    - Pass `schema prune` the query too, with `-q FILE`. To pipe the query in,
      pass `-q -` and the schema with `-s FILE`.
+   - A schema can be an Apollo Federation supergraph. `schema focus` and
+     `schema prune` keep it one, and `query focus` and `query strip` read the
+     API schema its clients see.
 3. Pass targets to `query focus`, `query strip`, and `schema focus` as
    positional arguments.
    - Pass `query focus` and `query strip` types (`Profile`) or fields on a
@@ -95,7 +104,12 @@ const STEPS: &str = "\
      empties, and an operation it empties.
    - `query strip` removes a field or directive whose required input it
      removes.
-4. Redirect stdout to a file to save the result.
+   - Pass `schema subgraph` the name of one subgraph, as the supergraph's
+     `@join__graph(name:)` gives it. An unknown name exits 1, listing the
+     names there are.
+4. Redirect stdout to a file to save the result. `schema split` writes its
+   own files instead, one per subgraph in its `-o` directory, and prints
+   nothing to stdout.
 5. Read the result.
    - Stdout holds only the GraphQL document.
    - Stderr holds `error:`, `warning:`, and `note:` lines.

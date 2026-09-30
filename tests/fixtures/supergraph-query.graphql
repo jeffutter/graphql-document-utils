@@ -1,0 +1,12 @@
+query TopProducts {
+  topProducts(first: 3) {
+    name
+    shipping
+    reviews {
+      body
+      author {
+        username
+      }
+    }
+  }
+}

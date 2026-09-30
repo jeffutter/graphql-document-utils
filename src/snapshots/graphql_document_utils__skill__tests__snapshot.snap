@@ -4,7 +4,7 @@ expression: skill()
 ---
 ---
 name: graphql-document-utils
-description: Transform GraphQL documents from the command line. Use to canonicalize or diff GraphQL queries, cut a query down to the parts that reach a type or field, remove a type or field and everything that references it from a query, prune a schema to what a set of queries uses, extract a type and its dependencies from a schema, or sort and format a schema.
+description: Transform GraphQL documents from the command line. Use to canonicalize or diff GraphQL queries, cut a query down to the parts that reach a type or field, remove a type or field and everything that references it from a query, prune a schema to what a set of queries uses, extract a type and its dependencies from a schema, sort and format a schema, or do any of these to an Apollo Federation supergraph, split a supergraph into its subgraph schemas, or extract one subgraph from it.
 ---
 
 # graphql-document-utils
@@ -31,6 +31,9 @@ command prints the transformed document to stdout. Run a command as
    - Pass `query focus` and `query strip` the schema too, with `-s FILE`.
    - Pass `schema prune` the query too, with `-q FILE`. To pipe the query in,
      pass `-q -` and the schema with `-s FILE`.
+   - A schema can be an Apollo Federation supergraph. `schema focus` and
+     `schema prune` keep it one, and `query focus` and `query strip` read the
+     API schema its clients see.
 3. Pass targets to `query focus`, `query strip`, and `schema focus` as
    positional arguments.
    - Pass `query focus` and `query strip` types (`Profile`) or fields on a
@@ -53,7 +56,12 @@ command prints the transformed document to stdout. Run a command as
      empties, and an operation it empties.
    - `query strip` removes a field or directive whose required input it
      removes.
-4. Redirect stdout to a file to save the result.
+   - Pass `schema subgraph` the name of one subgraph, as the supergraph's
+     `@join__graph(name:)` gives it. An unknown name exits 1, listing the
+     names there are.
+4. Redirect stdout to a file to save the result. `schema split` writes its
+   own files instead, one per subgraph in its `-o` directory, and prints
+   nothing to stdout.
 5. Read the result.
    - Stdout holds only the GraphQL document.
    - Stderr holds `error:`, `warning:`, and `note:` lines.
@@ -140,6 +148,29 @@ extensions. The output is already formatted as `schema format` formats it.
     graphql-document-utils schema sort -s schema.graphql
     graphql-document-utils schema focus -s schema.graphql User | graphql-document-utils schema sort
 
+`graphql-document-utils schema split [--schema <SCHEMA>] --output <DIR>`
+
+Write each subgraph of a supergraph to a file of its own. Each subgraph is
+extracted as `schema subgraph` extracts it and written to `<name>.graphql` in
+the `-o` directory, which is created if missing. Nothing goes to stdout; a note
+on stderr names each file written.
+
+    graphql-document-utils schema split -s supergraph.graphql -o subgraphs
+    graphql-document-utils schema prune -s supergraph.graphql -q supergraph-query.graphql | graphql-document-utils schema split -o subgraphs
+
+`graphql-document-utils schema subgraph [--schema <SCHEMA>] <NAME>`
+
+Extract one subgraph's schema from a supergraph. The subgraph is printed as a
+schema of its own: the types, fields, and members it has, as it typed them, with
+the federation directives it applies (`@key`, `@external`, `@requires`,
+`@provides`, `@override`, and the rest) read back from the supergraph's join
+directives, under an `@link` importing those it uses. For a supergraph composed
+from subgraphs, that is what each of them said, apart from what a supergraph
+does not record.
+
+    graphql-document-utils schema subgraph -s supergraph.graphql reviews
+    cat supergraph.graphql | graphql-document-utils schema subgraph accounts
+
 ## Results and exit codes
 
 - `0`: success. A valid target that matches nothing adds a `note:` on stderr.
@@ -151,8 +182,10 @@ extensions. The output is already formatted as `schema format` formats it.
 - `1`: bad input, or output that cannot be written: an unreadable file, a parse
   error (with line and column), a blank schema for `query focus` or
   `query strip`, a malformed target (or a file passed as one), an unknown type
-  or field, a field or built-in scalar given to `schema focus`, or a failed
-  write to stdout (as on a full disk).
+  or field, a field or built-in scalar given to `schema focus`, a schema that is
+  not a supergraph given to `schema subgraph` or `split`, an unknown subgraph
+  name, an invalid or Federation 1 supergraph, a failed write to stdout (as on a
+  full disk), or a file `schema split` cannot write.
 - `2`: usage error: an unknown command or flag, a missing flag or targets, no
   document to read (no flag, and stdin a terminal), or both of `schema prune`'s
   documents on stdin.

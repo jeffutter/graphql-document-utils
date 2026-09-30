@@ -1,6 +1,7 @@
 use crate::{
     error::Error,
     input::{Input, Kind, Origin},
+    supergraph::Supergraph,
     util,
 };
 use graphql_parser::schema::{
@@ -22,17 +23,25 @@ use std::{
 /// fails with `Error::BlankSchema` instead, before the targets are checked and
 /// whether or not the query is blank.
 ///
+/// A supergraph (see `Supergraph::detect`) is read as its API schema, the
+/// one clients query (see `Supergraph::api_schema`), so neither its machinery
+/// nor anything `@inaccessible` is a target a query can reach.
+///
 /// A name the schema defines more than once adds a warning to `warnings`, and
 /// only its first definition is kept (see `Input::parse_schema`).
 pub fn parse_schema<'s>(
     schema: &'s Input,
     warnings: &mut Vec<String>,
 ) -> Result<SchemaDoc<'s, String>, Error> {
-    schema
+    let doc = schema
         .parse_schema(warnings)?
         .ok_or_else(|| Error::BlankSchema {
             origin: schema.origin().clone(),
-        })
+        })?;
+    Ok(match Supergraph::detect(&doc) {
+        Some(supergraph) => supergraph.api_schema(&doc),
+        None => doc,
+    })
 }
 
 /// A target: either a bare type name (`MyType`), or a field qualified by the
@@ -349,7 +358,7 @@ pub fn unknown_type<'a>(
 /// (`Nothing` for `String`). One wrong letter in a four-letter name still
 /// scores 0.83. Ties go to the alphabetically first, so the suggestion does not
 /// depend on hash order.
-fn suggest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<String> {
+pub fn suggest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<String> {
     let name = name.to_lowercase();
     let mut best: Option<(f64, &str)> = None;
     for candidate in candidates {
@@ -601,5 +610,21 @@ mod tests {
         assert_eq!(quoted_list(&["A"]), "`A`");
         assert_eq!(quoted_list(&["A", "B"]), "`A` or `B`");
         assert_eq!(quoted_list(&["A", "B", "C"]), "`A`, `B` or `C`");
+    }
+
+    /// A supergraph's targets are its API schema's: its machinery and what
+    /// is `@inaccessible` are unknown, the rest resolves as in any schema.
+    #[test]
+    fn a_supergraph_resolves_targets_against_its_api_schema() {
+        let input = Input::inline(include_str!("../tests/fixtures/supergraph.graphql"));
+        let schema = parse_schema(&input, &mut Vec::new()).unwrap();
+        let origin = Origin::File(PathBuf::from("supergraph.graphql"));
+        let error = |targets: &[&str]| match Matcher::new(&schema, &origin, targets) {
+            Ok(_) => panic!("expected {targets:?} to be rejected"),
+            Err(error) => error.to_string(),
+        };
+        assert!(Matcher::new(&schema, &origin, &["User.username", "Review"]).is_ok());
+        assert_eq!(error(&["User.secret"]), "`User` has no field `secret`");
+        assert!(error(&["join__Graph"]).starts_with("unknown type `join__Graph`"));
     }
 }

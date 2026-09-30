@@ -1,4 +1,9 @@
-use crate::{error::Error, input::Input, util, Output};
+use crate::{
+    error::Error,
+    input::Input,
+    supergraph::{enum_argument, string_argument, FieldSet, Graph, Supergraph},
+    util, Output,
+};
 use graphql_parser::{
     query::{Definition as QueryDef, FragmentDefinition, Selection, SelectionSet, TypeCondition},
     schema::{Field, InterfaceType, ObjectType, TypeDefinition, UnionType},
@@ -36,9 +41,17 @@ use std::collections::{HashMap, HashSet};
 /// would hide that nothing reached the prune. Both documents are parsed before
 /// either is found blank, so a syntax error in the other is still reported.
 ///
+/// A supergraph (see `Supergraph::detect`) stays one a router can load. Its
+/// machinery is kept whole (see `util::retain_with_dependencies`), and the
+/// fields its join directives name are used like the query's own, as are the
+/// fields each subgraph needs to keep what it resolves (see
+/// `complete_used_fields`). A field set that does not parse is
+/// `Error::MalformedSupergraph`.
+///
 /// A name either document defines more than once adds a warning to
 /// `warnings`, and only its first definition is kept (see
-/// `Input::parse_schema`/`parse_query`).
+/// `Input::parse_schema`/`parse_query`), as does what a supergraph records that
+/// pruning does not follow (see `Supergraph::untracked`).
 pub fn process(schema: &Input, query: &Input, warnings: &mut Vec<String>) -> Result<Output, Error> {
     let (schema_doc, query_doc) =
         match (schema.parse_schema(warnings)?, query.parse_query(warnings)?) {
@@ -56,6 +69,26 @@ pub fn process(schema: &Input, query: &Input, warnings: &mut Vec<String>) -> Res
     // seen as used like any other, and `retain_with_dependencies` trims each
     // `extend` block to its share of what survives.
     let type_map = util::merged_type_definitions(&schema_doc);
+
+    let federation = match Supergraph::detect(&schema_doc) {
+        Some(supergraph) => {
+            warnings.extend(supergraph.untracked(&type_map));
+            let field_sets =
+                supergraph
+                    .field_sets(&type_map)
+                    .map_err(|message| Error::MalformedSupergraph {
+                        origin: schema.origin().clone(),
+                        message,
+                    })?;
+            let graphs = supergraph.graphs(&type_map);
+            Some(Federation {
+                supergraph,
+                field_sets,
+                graphs,
+            })
+        }
+        None => None,
+    };
 
     let fragments: HashMap<_, _> = query_doc
         .definitions
@@ -117,7 +150,7 @@ pub fn process(schema: &Input, query: &Input, warnings: &mut Vec<String>) -> Res
         used_fields.entry(root_types.query.clone()).or_default();
     }
 
-    complete_used_fields(&type_map, &mut used_fields);
+    complete_used_fields(&type_map, federation.as_ref(), &mut used_fields);
     let entered = entered_types(&type_map, &used_fields);
 
     let seed_types: Vec<&str> = entered
@@ -206,10 +239,17 @@ fn keeps_field(
     selected(type_name) || interfaces.iter().any(|iface| selected(iface))
 }
 
+/// What a supergraph adds to what pruning must keep.
+struct Federation {
+    supergraph: Supergraph,
+    field_sets: Vec<FieldSet>,
+    graphs: Vec<Graph>,
+}
+
 /// Adds to `used_fields` what the output needs beyond what the query selects,
 /// so no type it keeps is trimmed to empty and removed. Each removal would
 /// cascade to a field returning the type, leaving the query or an implementor
-/// invalid against the output. Two rules apply, until neither adds anything.
+/// invalid against the output. The rules apply until none adds anything.
 ///
 /// Every kept field enters the type it returns. For a field the query selects
 /// that is already so, but an implementor keeps every field its interfaces
@@ -233,10 +273,23 @@ fn keeps_field(
 /// interfaces first, since what an interface selects carries over to its
 /// implementors, which then need nothing of their own.
 ///
+/// A supergraph adds two rules, applied before the last since they may leave
+/// nothing empty. First, the router selects what the join directives name, so
+/// every kept type uses its keys (for every subgraph), and every kept field
+/// the fields its `requires` names on the type and its `provides` on the type
+/// it returns, as a query selection would, entering the types they reach. The
+/// type a kept field has in a subgraph (`@join__field(type:)`) is entered too.
+/// Second, each subgraph must stay valid on its own: a kept field a subgraph
+/// resolves returns a type that subgraph must keep something of, so an object
+/// or interface keeping no field the subgraph resolves selects the one it
+/// would above among those it does, and a union keeping no member the
+/// subgraph has selects the first it has.
+///
 /// Types already empty in the source have nothing to select and are left as
 /// written.
 fn complete_used_fields(
     type_map: &HashMap<String, TypeDefinition<'_, String>>,
+    federation: Option<&Federation>,
     used_fields: &mut HashMap<String, HashSet<String>>,
 ) {
     let composite = |name: &String| {
@@ -264,6 +317,7 @@ fn complete_used_fields(
             let mut kept: Vec<&str> = entered_types(type_map, used_fields).into_iter().collect();
             let mut seen: HashSet<&str> = kept.iter().copied().collect();
             let mut entering: Vec<String> = Vec::new();
+            let mut applying: Vec<&FieldSet> = Vec::new();
             while let Some(name) = kept.pop() {
                 let (implements_interfaces, fields) = match type_map.get(name) {
                     Some(TypeDefinition::Object(ObjectType {
@@ -284,20 +338,56 @@ fn complete_used_fields(
                         .map(String::as_str)
                         .filter(|iface| seen.insert(iface)),
                 );
-                entering.extend(
-                    fields
-                        .iter()
-                        .filter(|f| keeps_field(used_fields, name, implements_interfaces, f))
-                        .filter_map(|f| util::named_type(&f.field_type))
-                        .filter(|returns| composite(returns) && !used_fields.contains_key(*returns))
-                        .cloned(),
-                );
+                let kept_fields = fields
+                    .iter()
+                    .filter(|f| keeps_field(used_fields, name, implements_interfaces, f));
+                for field in kept_fields {
+                    let graph_types = federation
+                        .map(|fed| fed.supergraph.graph_types(&field.directives))
+                        .unwrap_or_default();
+                    entering.extend(
+                        util::named_type(&field.field_type)
+                            .cloned()
+                            .into_iter()
+                            .chain(graph_types)
+                            .filter(|returns| {
+                                composite(returns) && !used_fields.contains_key(returns)
+                            }),
+                    );
+                }
+                if let Some(fed) = federation {
+                    applying.extend(fed.field_sets.iter().filter(|fs| {
+                        fs.type_name == name
+                            && fs.field.as_ref().is_none_or(|field| {
+                                fields.iter().any(|f| {
+                                    f.name == *field
+                                        && keeps_field(used_fields, name, implements_interfaces, f)
+                                })
+                            })
+                    }));
+                }
             }
-            if entering.is_empty() {
-                break;
-            }
+            let before = used_count(used_fields);
             for name in entering {
                 used_fields.entry(name).or_default();
+            }
+            for fs in applying {
+                collect_used_fields(
+                    &fs.on,
+                    &fs.selection,
+                    type_map,
+                    used_fields,
+                    &HashMap::new(),
+                );
+            }
+            if used_count(used_fields) == before {
+                break;
+            }
+        }
+
+        if let Some(fed) = federation {
+            if complete_graphs(type_map, fed, used_fields) {
+                continue;
             }
         }
 
@@ -339,10 +429,7 @@ fn complete_used_fields(
         match td {
             TypeDefinition::Object(ObjectType { fields, .. })
             | TypeDefinition::Interface(InterfaceType { fields, .. }) => {
-                if let Some(field) = fields.iter().min_by_key(|f| {
-                    let returns_composite = util::named_type(&f.field_type).is_some_and(composite);
-                    (returns_composite, !f.arguments.is_empty())
-                }) {
+                if let Some(field) = util::smallest_field(type_map, fields) {
                     used_fields
                         .entry(name.clone())
                         .or_default()
@@ -361,6 +448,129 @@ fn complete_used_fields(
             _ => (),
         }
     }
+}
+
+/// How many types are entered and fields used, which only grows, so a pass
+/// that leaves it unchanged added nothing.
+fn used_count(used_fields: &HashMap<String, HashSet<String>>) -> usize {
+    used_fields.len() + used_fields.values().map(HashSet::len).sum::<usize>()
+}
+
+/// Applies the second supergraph rule of `complete_used_fields` once: for
+/// each kept field, each subgraph resolving it must keep something of the type
+/// the field returns there. Returns whether it added anything.
+fn complete_graphs(
+    type_map: &HashMap<String, TypeDefinition<'_, String>>,
+    fed: &Federation,
+    used_fields: &mut HashMap<String, HashSet<String>>,
+) -> bool {
+    let sg = &fed.supergraph;
+    let entered = entered_types(type_map, used_fields);
+    let in_graph = |td: &TypeDefinition<'_, String>, graph: &str| {
+        sg.type_graphs(td, &fed.graphs).iter().any(|g| g == graph)
+    };
+
+    // The kept objects and interfaces, and the interfaces they implement.
+    let mut kept: Vec<&str> = entered.iter().copied().collect();
+    let mut seen: HashSet<&str> = kept.iter().copied().collect();
+    let mut adding: Vec<(String, Option<String>)> = Vec::new();
+    while let Some(name) = kept.pop() {
+        let Some(td @ (TypeDefinition::Object(_) | TypeDefinition::Interface(_))) =
+            type_map.get(name)
+        else {
+            continue;
+        };
+        let (implements_interfaces, fields) = match td {
+            TypeDefinition::Object(obj) => (&obj.implements_interfaces, &obj.fields),
+            TypeDefinition::Interface(iface) => (&iface.implements_interfaces, &iface.fields),
+            _ => unreachable!(),
+        };
+        kept.extend(
+            implements_interfaces
+                .iter()
+                .map(String::as_str)
+                .filter(|iface| seen.insert(iface)),
+        );
+        let owner_in = |graph: &str| in_graph(td, graph);
+        for field in fields
+            .iter()
+            .filter(|f| keeps_field(used_fields, name, implements_interfaces, f))
+        {
+            for graph in &fed.graphs {
+                let graph = graph.value.as_str();
+                if !sg.resolves_in(&field.directives, owner_in(graph), graph) {
+                    continue;
+                }
+                let returns = sg.type_in(field, graph);
+                let Some(returns) = util::named_type(&returns) else {
+                    continue;
+                };
+                let Some(target) = type_map.get(returns).filter(|t| in_graph(t, graph)) else {
+                    continue;
+                };
+                match target {
+                    TypeDefinition::Object(ObjectType {
+                        implements_interfaces,
+                        fields,
+                        ..
+                    })
+                    | TypeDefinition::Interface(InterfaceType {
+                        implements_interfaces,
+                        fields,
+                        ..
+                    }) => {
+                        let mut resolved = fields
+                            .iter()
+                            .filter(|f| sg.resolves_in(&f.directives, true, graph));
+                        if resolved
+                            .clone()
+                            .any(|f| keeps_field(used_fields, returns, implements_interfaces, f))
+                        {
+                            continue;
+                        }
+                        if let Some(field) = util::smallest_field(type_map, &mut resolved) {
+                            adding.push((returns.clone(), Some(field.name.clone())));
+                        }
+                    }
+                    TypeDefinition::Union(union) => {
+                        let listed = sg.joins(&union.directives, "unionMember");
+                        let members: Vec<&String> = union
+                            .types
+                            .iter()
+                            .filter(|member| {
+                                listed.is_empty()
+                                    || listed.iter().any(|d| {
+                                        enum_argument(d, "graph") == Some(graph)
+                                            && string_argument(d, "member") == Some(member.as_str())
+                                    })
+                            })
+                            .filter(|member| {
+                                matches!(
+                                    type_map.get(*member),
+                                    Some(t @ TypeDefinition::Object(_)) if in_graph(t, graph)
+                                )
+                            })
+                            .collect();
+                        if !members.iter().any(|m| entered.contains(m.as_str())) {
+                            if let Some(first) = members.first() {
+                                adding.push(((*first).clone(), None));
+                            }
+                        }
+                    }
+                    TypeDefinition::Scalar(_)
+                    | TypeDefinition::Enum(_)
+                    | TypeDefinition::InputObject(_) => (),
+                }
+            }
+        }
+    }
+
+    let before = used_count(used_fields);
+    for (type_name, field) in adding {
+        let used = used_fields.entry(type_name).or_default();
+        used.extend(field);
+    }
+    used_count(used_fields) != before
 }
 
 /// Collects used fields from the selection set, and marks `parent_type` and
@@ -449,7 +659,7 @@ fn collect_selection_directives(selection_set: &SelectionSet<String>, used: &mut
 
 #[cfg(test)]
 mod tests {
-    use crate::{input::Input, prune, util};
+    use crate::{input::Input, prune, supergraph::Supergraph, util};
     use graphql_parser::{
         parse_query, parse_schema,
         query::{Definition, FragmentDefinition, Selection, SelectionSet, TypeCondition},
@@ -462,7 +672,8 @@ mod tests {
     /// Prunes and checks that the output names only types and directives it
     /// defines, has no empty definitions, still satisfies every interface it
     /// keeps, still defines everything the query uses, and keeps the query root
-    /// type when the input schema has one.
+    /// type when the input schema has one. A supergraph must stay one
+    /// (`util::assert_valid_supergraph`).
     fn pruned(schema: &str, query: &str) -> String {
         let result = prune::process(
             &Input::inline(schema),
@@ -478,7 +689,14 @@ mod tests {
         if let Some(root) = query_root(schema) {
             assert_has_query_root(&result, &root);
         }
+        if is_supergraph(schema) {
+            util::assert_valid_supergraph(&result);
+        }
         result
+    }
+
+    fn is_supergraph(schema: &str) -> bool {
+        Supergraph::detect(&parse_schema::<String>(schema).unwrap()).is_some()
     }
 
     /// The query root type `schema` defines, resolved as pruning resolves it,
@@ -2519,6 +2737,134 @@ mod tests {
 
                 interface Node {
                   name: String
+                }
+            "}
+        );
+    }
+
+    const SUPERGRAPH: &str = include_str!("../tests/fixtures/supergraph.graphql");
+
+    /// The types of a pruned supergraph that are not its machinery, in order.
+    fn supergraph_types(schema: &str) -> String {
+        let doc = parse_schema::<String>(schema).unwrap();
+        let sg = Supergraph::detect(&doc).unwrap();
+        doc.definitions
+            .iter()
+            .filter_map(|def| match def {
+                SchemaDef::TypeDefinition(td)
+                    if !sg.is_machinery_type(util::type_definition_name(td)) =>
+                {
+                    Some(td.to_string())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The fields a key, `@requires`, or `@provides` names are kept, since the
+    /// router fetches them to resolve what the query selects, though the query
+    /// never does.
+    #[test]
+    fn keeps_the_fields_keys_requires_and_provides_name() {
+        let query = include_str!("../tests/fixtures/supergraph-query.graphql");
+        assert_eq!(
+            supergraph_types(&pruned(SUPERGRAPH, query)),
+            indoc! {r#"
+                type Product @join__type(graph: PRODUCTS, key: "upc") @join__type(graph: REVIEWS, key: "upc") {
+                  upc: String!
+                  name: String @join__field(graph: PRODUCTS, overrideLabel: "percent(50)") @join__field(graph: REVIEWS, override: "products", overrideLabel: "percent(50)")
+                  weight: Int @join__field(graph: PRODUCTS) @join__field(graph: REVIEWS, external: true)
+                  shipping: Int @join__field(graph: REVIEWS, requires: "weight")
+                  reviews: [Review] @join__field(graph: REVIEWS)
+                }
+
+                type Query @join__type(graph: ACCOUNTS) @join__type(graph: PRODUCTS) @join__type(graph: REVIEWS) {
+                  topProducts(first: Int = 5): [Product] @join__field(graph: PRODUCTS)
+                }
+
+                type Review @join__type(graph: REVIEWS) {
+                  body: String
+                  author: User @join__field(graph: REVIEWS, provides: "username")
+                }
+
+                type User @join__type(graph: ACCOUNTS, key: "id") @join__type(graph: PRODUCTS, key: "id", resolvable: false) @join__type(graph: REVIEWS, key: "id") {
+                  id: ID!
+                  username: String @join__field(graph: ACCOUNTS) @join__field(graph: REVIEWS, external: true)
+                }
+            "#}
+        );
+    }
+
+    /// A key's nested selection enters the types it passes through.
+    #[test]
+    fn keeps_nested_key_fields() {
+        let types = supergraph_types(&pruned(SUPERGRAPH, "{ teams { rating } }"));
+        assert!(
+            types.contains(indoc! {r#"
+                type Org @join__type(graph: ACCOUNTS, key: "id") @join__type(graph: REVIEWS, key: "id", resolvable: false) {
+                  id: ID!
+                }
+            "#}),
+            "{types}"
+        );
+        assert!(types.contains("  slug: String!\n  org: Org!\n"), "{types}");
+    }
+
+    /// The join directives follow what prune removes, so none says a graph
+    /// has an interface the output lacks.
+    #[test]
+    fn drops_the_join_directives_of_what_it_removes() {
+        let types = supergraph_types(&pruned(SUPERGRAPH, "{ topProducts { upc } }"));
+        assert!(
+            types.contains(indoc! {r#"
+                type Product @join__type(graph: PRODUCTS, key: "upc") @join__type(graph: REVIEWS, key: "upc") {
+                  upc: String!
+                }
+            "#}),
+            "{types}"
+        );
+    }
+
+    /// Every subgraph resolving a kept field keeps a field of the type it
+    /// returns there, or its extraction would lose the type and the field
+    /// with it. Here only `B` resolves `Query.b`, and `Pair` has only `y` in
+    /// `B`, which the query never selects.
+    #[test]
+    fn keeps_a_field_of_what_a_kept_field_returns_in_each_graph_resolving_it() {
+        let schema = indoc! {r#"
+            schema @link(url: "https://specs.apollo.dev/link/v1.0") @link(url: "https://specs.apollo.dev/join/v0.4", for: EXECUTION) { query: Query }
+            directive @join__type(graph: join__Graph!, key: join__FieldSet) repeatable on OBJECT
+            directive @join__field(graph: join__Graph) repeatable on FIELD_DEFINITION
+            directive @join__graph(name: String!, url: String!) on ENUM_VALUE
+            directive @link(url: String, as: String, for: link__Purpose, import: [link__Import]) repeatable on SCHEMA
+            scalar join__FieldSet
+            scalar link__Import
+            enum link__Purpose { SECURITY EXECUTION }
+            enum join__Graph {
+              A @join__graph(name: "a", url: "http://a")
+              B @join__graph(name: "b", url: "http://b")
+            }
+            type Query @join__type(graph: A) @join__type(graph: B) {
+              a: Pair @join__field(graph: A)
+              b: Pair @join__field(graph: B)
+            }
+            type Pair @join__type(graph: A) @join__type(graph: B) {
+              x: Int @join__field(graph: A)
+              y: Int @join__field(graph: B)
+            }
+        "#};
+        assert_eq!(
+            supergraph_types(&pruned(schema, "{ a { x } b { __typename } }")),
+            indoc! {"
+                type Query @join__type(graph: A) @join__type(graph: B) {
+                  a: Pair @join__field(graph: A)
+                  b: Pair @join__field(graph: B)
+                }
+
+                type Pair @join__type(graph: A) @join__type(graph: B) {
+                  x: Int @join__field(graph: A)
+                  y: Int @join__field(graph: B)
                 }
             "}
         );

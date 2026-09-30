@@ -39,7 +39,8 @@ pub const ABOUT: &str = "Utilities for processing GraphQL query and schema docum
 /// Each noun's `about`, which the top-level command list shows. It names the
 /// noun's verbs, so that list shows every command there is.
 pub const QUERY_ABOUT: &str = "Operate on a query document (normalize, focus, strip)";
-pub const SCHEMA_ABOUT: &str = "Operate on a schema document (format, focus, prune, sort)";
+pub const SCHEMA_ABOUT: &str =
+    "Operate on a schema document (format, focus, prune, sort, split, subgraph)";
 
 /// What the top-level help ends with, before the output conventions: what
 /// the tool is for, as the command that does each thing, and where to read
@@ -63,6 +64,10 @@ Common tasks:
     graphql-document-utils schema focus -s schema.graphql User
   Sort and format a schema
     graphql-document-utils schema sort -s schema.graphql
+  Split a supergraph into the schemas of its subgraphs
+    graphql-document-utils schema split -s supergraph.graphql -o subgraphs
+  Extract one subgraph's schema from a supergraph
+    graphql-document-utils schema subgraph -s supergraph.graphql reviews
 
 Run 'graphql-document-utils <noun> <verb> --help' for details, or
 'graphql-document-utils skill' for a complete guide for agents.";
@@ -176,6 +181,7 @@ pub const QUERY_FOCUS_ABOUT: &str =
 // - nothing reached: `query_focus::notes_a_valid_target_that_nothing_reaches`,
 //   `cli::a_target_that_matches_nothing_gets_a_note`
 // - blank: `query_focus::passes_an_empty_document_through`
+// - supergraphs: `query_target::a_supergraph_resolves_targets_against_its_api_schema`
 pub const QUERY_FOCUS_LONG_ABOUT: &str = "\
 Keep only the parts of a query that reach the given types or fields
 
@@ -205,7 +211,11 @@ matched against the targets.
 Every target must be a type or field the schema knows, or the command fails,
 with a did-you-mean when a name is close. A valid target that reaches nothing
 is not an error: the output is empty, with a note on stderr. A blank query
-passes through as empty.";
+passes through as empty.
+
+A supergraph schema is read as the API schema its clients see, so the types of
+the specs it links, such as `join__Graph`, and whatever is `@inaccessible` are
+unknown names.";
 
 pub const QUERY_FOCUS_TARGETS: &str = "Types (`MyType`) or fields (`MyType.field`) to focus on";
 
@@ -245,6 +255,7 @@ pub const QUERY_STRIP_ABOUT: &str =
 //   `cli::a_target_that_matches_nothing_gets_a_note`
 // - everything stripped: `query_strip::returns_empty_when_everything_is_stripped`
 // - blank: `query_strip::passes_an_empty_document_through`
+// - supergraphs: `query_target::a_supergraph_resolves_targets_against_its_api_schema`
 pub const QUERY_STRIP_LONG_ABOUT: &str = "\
 Remove the given types or fields, and every reference to them, from a query
 
@@ -276,7 +287,8 @@ Every target must be a type or field the schema knows, or the command fails,
 with a did-you-mean when a name is close. A valid target that matches nothing
 is not an error: the query comes out unchanged apart from dropping unused
 fragments, with a note on stderr. If everything is stripped, the output is
-empty. A blank query passes through as empty.";
+empty. A blank query passes through as empty. A supergraph schema is read as
+its API schema, as in `query focus`.";
 
 pub const QUERY_STRIP_TARGETS: &str = "Types (`MyType`) or fields (`MyType.field`) to strip";
 
@@ -369,6 +381,10 @@ pub const SCHEMA_FOCUS_ABOUT: &str =
 //   `focus::suggests_the_right_case`,
 //   `focus::rejects_a_built_in_scalar_the_schema_does_not_define`
 // - blank: `focus::passes_a_blank_schema_through`
+// - supergraphs: `focus::test_focus_on_a_supergraph_keeps_its_machinery_and_a_query_root`,
+//   `focus::test_focus_on_a_supergraph_keeps_a_query_root_it_reaches_whole`,
+//   `focus::test_focus_on_a_supergraph_adds_what_the_query_root_field_returns`,
+//   each checked by `focused` with `util::assert_valid_supergraph`
 pub const SCHEMA_FOCUS_LONG_ABOUT: &str = "\
 Reduce a schema to the given types and everything they depend on
 
@@ -392,7 +408,12 @@ fields, this takes no fields: a `Type.field` fails with a pointer to that
 command. Every type must be one the schema defines, or the command fails, with
 a did-you-mean when a name is close; a built-in scalar such as `String` is
 rejected, as it has no definition to keep. A blank schema passes through as
-empty.";
+empty.
+
+A supergraph stays a supergraph that `schema subgraph` and `schema split` can
+read: it keeps its `schema` block and the definitions of the specs it links,
+and the join directives of what it keeps. When the given types do not reach
+the query root, it is added with one field, and what that field returns.";
 
 pub const SCHEMA_FOCUS_TYPES: &str = "Types to keep, along with all of their descendants";
 
@@ -419,6 +440,11 @@ pub const SCHEMA_PRUNE_ABOUT: &str =
 // - several queries: `examples::every_example_runs` (`cat queries/*.graphql`)
 // - blank: `prune::passes_a_blank_schema_through`,
 //   `cli::a_blank_query_prunes_to_nothing_with_a_note`
+// - supergraphs: `prune::keeps_the_fields_keys_requires_and_provides_name`,
+//   `prune::keeps_nested_key_fields`,
+//   `prune::drops_the_join_directives_of_what_it_removes`,
+//   `prune::keeps_a_field_of_what_a_kept_field_returns_in_each_graph_resolving_it`,
+//   each checked by `pruned` with `util::assert_valid_supergraph`
 pub const SCHEMA_PRUNE_LONG_ABOUT: &str = "\
 Remove the types and fields a query does not use from a schema
 
@@ -437,7 +463,14 @@ always kept, so a query of only mutations still gets one.
 
 To prune for several queries at once, pass them as one document, such as by
 piping them all to `-q -`. A blank schema passes through as empty, and a blank
-query gives an empty output with a note on stderr.";
+query gives an empty output with a note on stderr.
+
+A supergraph stays a supergraph, as with `schema focus`. The fields a kept
+type's keys and a kept field's `@requires` and `@provides` name are kept too,
+since the router fetches them to resolve what the query selects. A subgraph
+resolving a kept field keeps a field of the type it returns, so it stays a
+valid schema. So each subgraph `schema split` extracts from the output has the
+part of it the query uses.";
 
 /// A path, not the document `schema prune` transforms, so it has no default and
 /// reads stdin only when given `-`.
@@ -454,6 +487,108 @@ pub const SCHEMA_PRUNE_EXAMPLES: &str = "\
 Examples:
   graphql-document-utils schema prune -s schema.graphql -q query.graphql
   cat queries/*.graphql | graphql-document-utils schema prune -s schema.graphql -q -";
+
+pub const SCHEMA_SPLIT_ABOUT: &str = "Write each subgraph of a supergraph to a file of its own";
+
+// Tested by:
+// - files and notes: `subgraph::split_writes_each_subgraph_to_a_file_of_its_own`,
+//   `examples::every_example_runs`
+// - replaced, and no other touched: `subgraph::split_replaces_its_own_files_and_no_other`,
+//   `cli::split_writes_only_inside_its_directory`
+// - no types: `subgraph::split_skips_a_subgraph_with_no_types_with_a_note`
+// - names: `subgraph::split_refuses_a_name_that_is_not_a_plain_file_name_and_writes_nothing`,
+//   `subgraph::split_refuses_names_that_differ_only_in_case`
+// - failures: `subgraph::a_schema_that_is_not_a_supergraph_is_an_error`,
+//   `subgraph::a_federation_1_supergraph_is_an_error`,
+//   `subgraph::split_into_a_directory_it_cannot_make_is_an_error`
+// - blank: `subgraph::split_of_a_blank_schema_writes_nothing`
+pub const SCHEMA_SPLIT_LONG_ABOUT: &str = "\
+Write each subgraph of a supergraph to a file of its own
+
+Each subgraph is extracted as `schema subgraph` extracts it and written to
+`<name>.graphql` in the `-o` directory, which is created if missing. Nothing
+goes to stdout; a note on stderr names each file written.
+
+A file of one of those names is replaced, and no other file is touched. A
+subgraph with no types gets no file, with a note. The names become file names,
+so each must be only letters, digits, `_`, and `-`, and no two may differ only
+in case, or the command fails before writing anything; `schema subgraph`
+prints a subgraph of any name.
+
+The schema must be a Federation 2 supergraph, or the command fails, as does a
+file it cannot write. A blank schema writes nothing.";
+
+// Tested by: `subgraph::split_writes_each_subgraph_to_a_file_of_its_own`
+pub const SCHEMA_SPLIT_OUTPUT: &str = "\
+Directory to write `<name>.graphql` files to, created
+if missing. Required.";
+
+pub const SCHEMA_SPLIT_EXAMPLES: &str = "\
+Examples:
+  graphql-document-utils schema split -s supergraph.graphql -o subgraphs
+  graphql-document-utils schema prune -s supergraph.graphql -q supergraph-query.graphql | graphql-document-utils schema split -o subgraphs";
+
+pub const SCHEMA_SUBGRAPH_ABOUT: &str = "Extract one subgraph's schema from a supergraph";
+
+// Tested by:
+// - extraction: `subgraph::extracts_the_subgraphs_the_supergraph_was_composed_from`,
+//   `subgraph::a_type_a_graph_extends_is_an_extension_in_it`,
+//   `subgraph::a_field_takes_the_type_its_graph_gave_it`,
+//   `subgraph::a_join_directive_becomes_the_directive_it_records_in_the_graphs_it_names`,
+//   `subgraph::a_carried_directive_is_applied_and_imported_under_its_federation_name`
+// - `@link`: `subgraph::extracts_the_subgraphs_the_supergraph_was_composed_from`,
+//   `subgraph::a_subgraph_using_no_federation_directive_imports_none`
+// - names: `subgraph::an_unknown_subgraph_suggests_one_and_lists_them_all`
+// - rebuilt: `subgraph::extracts_the_subgraphs_the_supergraph_was_composed_from`
+//   (`@shareable`), `subgraph::a_field_takes_the_type_its_graph_gave_it`,
+//   `subgraph::an_unused_external_field_goes_and_what_it_empties_with_it`
+// - `extend schema`: `subgraph::a_subgraph_without_root_types_extends_the_schema`
+// - warnings: `subgraph::a_linked_directive_extraction_does_not_carry_is_a_warning`,
+//   `supergraph::context_arguments_are_not_followed_and_say_so`
+// - failures: `subgraph::a_schema_that_is_not_a_supergraph_is_an_error`,
+//   `subgraph::a_federation_1_supergraph_is_an_error`
+// - no types: `subgraph::a_subgraph_with_no_types_prints_nothing_with_a_note`
+// - blank: `subgraph::a_blank_schema_passes_through`
+pub const SCHEMA_SUBGRAPH_LONG_ABOUT: &str = "\
+Extract one subgraph's schema from a supergraph
+
+The subgraph is printed as a schema of its own: the types, fields, and members
+it has, as it typed them, with the federation directives it applies (`@key`,
+`@external`, `@requires`, `@provides`, `@override`, and the rest) read back
+from the supergraph's join directives, under an `@link` importing those it
+uses. For a supergraph composed from subgraphs, that is what each of them
+said, apart from what a supergraph does not record.
+
+The name is the one the supergraph's `@join__graph(name:)` gives, as `schema
+split` names its files. A name no subgraph has fails, with a did-you-mean when
+one is close, and the names there are.
+
+What a supergraph does not record is rebuilt where it can be. `@shareable` goes
+on each field more than one subgraph resolves, or on its type when all of its
+fields are. `@inaccessible`, `@tag`, and the other directives composition
+keeps go on the element in every subgraph that has it. An `@external` field no
+key, `@requires`, or `@provides` names is dropped, with what that empties. The
+`@link` is at the lowest federation version that defines what the subgraph
+uses, and a subgraph with no root types opens with `extend schema`.
+
+What it cannot rebuild is lost: how a subgraph named its root types, arguments
+it declared differently than composition merged them, and directives
+composition did not keep. A directive of another spec the supergraph links is
+dropped, with a warning, and a field taking `@fromContext` arguments gets one
+too, since what those select is not followed.
+
+The schema must be a Federation 2 supergraph, or the command fails. A subgraph
+left with no types prints nothing, with a note on stderr. A blank schema
+passes through as empty.";
+
+pub const SCHEMA_SUBGRAPH_NAME: &str = "\
+Name of the subgraph, as the supergraph's
+`@join__graph(name:)` gives it";
+
+pub const SCHEMA_SUBGRAPH_EXAMPLES: &str = "\
+Examples:
+  graphql-document-utils schema subgraph -s supergraph.graphql reviews
+  cat supergraph.graphql | graphql-document-utils schema subgraph accounts";
 
 pub const SKILL_ABOUT: &str = "Print a complete guide to this tool for agents, as an Agent Skill";
 
@@ -826,7 +961,7 @@ pub(crate) mod tests {
     /// The source of each module a `Tested by:` comment can name a test in,
     /// by the name it is given there: this crate's modules, its integration
     /// tests, and the library's tests as `graphql_normalize`.
-    const TEST_SOURCES: [(&str, &str); 16] = [
+    const TEST_SOURCES: [(&str, &str); 18] = [
         ("cli", include_str!("../tests/cli.rs")),
         ("docs", include_str!("docs.rs")),
         ("error", include_str!("error.rs")),
@@ -844,6 +979,8 @@ pub(crate) mod tests {
         ("query_target", include_str!("query_target.rs")),
         ("skill", include_str!("skill.rs")),
         ("sort", include_str!("sort.rs")),
+        ("subgraph", include_str!("subgraph.rs")),
+        ("supergraph", include_str!("supergraph.rs")),
         ("util", include_str!("util.rs")),
         ("extract", include_str!("docs/extract.rs")),
     ];

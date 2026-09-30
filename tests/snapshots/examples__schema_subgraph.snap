@@ -1,0 +1,106 @@
+---
+source: tests/examples.rs
+expression: transcript(&examples)
+---
+$ graphql-document-utils schema subgraph -s supergraph.graphql reviews
+exit: 0
+stdout:
+schema @link(url: "https://specs.apollo.dev/federation/v2.7", import: ["@key", "@external", "@requires", "@provides", "@override", "@interfaceObject"]) {
+  query: Query
+}
+
+type Media @key(fields: "id") @interfaceObject {
+  id: ID!
+  reviews: [Review]
+}
+
+type Org @key(fields: "id", resolvable: false) {
+  id: ID!
+}
+
+type Product @key(fields: "upc") {
+  upc: String!
+  name: String @override(from: "products", label: "percent(50)")
+  weight: Int @external
+  shipping: Int @requires(fields: "weight")
+  reviews: [Review]
+}
+
+enum ProductKind {
+  BOOK
+  VIDEO
+}
+
+type Query {
+  review(id: ID!): Review
+}
+
+type Review {
+  body: String
+  kind: ProductKind
+  author: User @provides(fields: "username")
+  product: Product
+}
+
+union SearchResult = Review
+
+type Team @key(fields: "slug org { id }") {
+  slug: String!
+  org: Org!
+  rating: Int
+}
+
+type User @key(fields: "id") {
+  id: ID!
+  username: String @external
+  reviews: [Review]
+}
+
+$ cat supergraph.graphql | graphql-document-utils schema subgraph accounts
+exit: 0
+stdout:
+schema @link(url: "https://specs.apollo.dev/federation/v2.0", import: ["@key", "@shareable", "@inaccessible"]) {
+  query: Query
+  mutation: Mutation
+}
+
+type Money @shareable {
+  amount: Int!
+  currency: String!
+}
+
+type Mutation {
+  updateUsername(input: UpdateUsernameInput!): User
+}
+
+interface Node {
+  id: ID!
+}
+
+type Org @key(fields: "id") {
+  id: ID!
+  name: String
+}
+
+type Query {
+  me: User
+  teams: [Team]
+}
+
+type Team @key(fields: "slug org { id }") {
+  slug: String!
+  org: Org!
+  name: String
+}
+
+input UpdateUsernameInput {
+  id: ID!
+  username: String!
+}
+
+type User implements Node @key(fields: "id") {
+  id: ID!
+  username: String @shareable
+  secret: String @inaccessible
+  balance: Money
+}

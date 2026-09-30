@@ -224,6 +224,7 @@ dependencies = [
  "rustix",
  "serde_norway",
  "strsim",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 

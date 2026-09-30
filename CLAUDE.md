@@ -71,6 +71,11 @@ parse and run every command in it. The details:
   stage by stage, `cat` reads fixtures (a `*` globbed in sorted order), and a
   `>` ends the arguments, so the output is captured and nothing is written. It
   shares `src/docs/extract.rs` (included by `#[path]`) with `docs`' tests. A
+  stage with `-o DIR` (`schema split`) gets a fresh `tempfile` directory in
+  place of `DIR`, with that path cut from its stderr, and the transcript shows
+  each file written (`wrote DIR/name:`, sorted) in place of an empty stdout,
+  so "prints something" means prints or writes something and the fixtures
+  directory is never written to. A
   stdout equal to the skill snapshot is written as a pointer to it; after a
   skill change accept that snapshot first. It also checks the README: a
   `graphql` fence introduced by a fixture's name (``this query,
@@ -174,7 +179,8 @@ parse and run every command in it. The details:
   the skill's exit-code list; `Error::one_of_each` lists every variant for it
   and the tests that check the help against the code
 - Stdout is only ever a GraphQL document, apart from help, `--version`, and
-  `skill`. `query focus`/`strip` and `schema prune` return an `Output` whose
+  `skill`. `schema split` is the one command that writes files, and prints
+  nothing to stdout: a note per file written. `query focus`/`strip` and `schema prune` return an `Output` whose
   notes `emit` prints to stderr as `note: ...`; the other commands return
   `String`, which converts into an `Output` with no notes
 - A valid target that matches nothing is not an error, so pipelines keep
@@ -390,6 +396,110 @@ parse and run every command in it. The details:
   their base: `retain_with_dependencies` trims the merged type, then projects the
   result back onto the base definition and each extension by member name
 
+### Supergraphs
+- `supergraph.rs` is the one place that knows federation. `Supergraph::detect`
+  finds a supergraph by its `schema` definition applying `@link` to the join
+  spec (`https://specs.apollo.dev/join/vX.Y`), with no flag, and records each
+  linked feature's name, version, `as:` rename, and `import:`s. The machinery
+  is what those features define: `@link` and `link__*`, and per feature its
+  `@prefix`, `@prefix__*`, `prefix__*`, and imported names
+  (`is_machinery_type`, `is_machinery_directive`). Everything is written from
+  the public link and join specs; no Apollo code is used or copied, and the
+  `apollo-federation` crate (Elastic-2.0) is not a dependency
+- Field sets (`key:`, `requires:`, `provides:`) are strings holding
+  selections. `parse_field_set` wraps one in `{ }` and parses it as a query,
+  so nested selections and inline fragments work. `field_sets` parses every
+  one up front, and one that does not parse is `Error::MalformedSupergraph`
+- `Supergraph::untracked` warns about what is recorded but not followed: a
+  `@join__field(contextArguments:)` (`@fromContext`), whose selections may
+  then be missing. Focus, prune, and extraction all print it
+- `util::retain_with_dependencies` detects a supergraph itself, so focus and
+  prune get the same rules without a parameter: every machinery definition is
+  kept whole, and so are the `schema` block's directives; the type a
+  `@join__field(type:)` names is a dependency; and `drop_dangling_relations`
+  brings a trimmed type's join directives in line with it, dropping a
+  `@join__implements`/`@join__unionMember` naming what it no longer has, and a
+  `@join__type` for a graph none of its remaining fields or members are in
+  (never the last, since a type with none is in every graph). The query root
+  is exempt and keeps every `@join__type`, since every subgraph has a query
+  root (if only for `_service`) and composition joins it to every graph
+- `schema prune` adds two rules to `complete_used_fields`' fixpoint (see
+  Prune Feature), before its last one since they may leave nothing empty.
+  First, the router fetches what the join directives name, so each entered
+  type uses its keys for every graph, and each kept field the fields its
+  `requires` names on its type and its `provides` on the type it returns, fed
+  through `collect_used_fields` as a query selection would be, entering what
+  they reach. The type a kept field has in a graph (`@join__field(type:)`) is
+  entered too. Second (`complete_graphs`), each subgraph must stay valid on
+  its own: a kept field a graph resolves returns a type that graph must keep
+  something of, so a type keeping no field of that graph selects the smallest
+  it has (`util::smallest_field`), and a union no member of it, its first
+- `schema focus` on a supergraph keeps the query root even when no root
+  reaches it, since a router needs one: trimmed to the one field
+  `util::smallest_field` picks (leaf-typed, no arguments preferred, the same
+  choice prune's last rule makes), and walks from what that field returns
+- `query_target::parse_schema` hands the query commands
+  `Supergraph::api_schema`: the machinery, the `schema` block's `@link`s, and
+  every machinery directive application are gone, and every `@inaccessible`
+  type, field, argument, enum value, and input field is hidden. So targets,
+  matching, and did-you-mean all see what clients see, and `join__Graph` is an
+  unknown type
+- Tests run every supergraph output of focus and prune through
+  `util::assert_valid_supergraph`: self-contained, no empty definitions, a
+  query root, every field-set name resolving, and every `@join__implements`/
+  `@join__unionMember` matching the type. Whether it also composes needs
+  Apollo's composition, a manual check (see CONTRIBUTING)
+
+### Subgraph Extraction (`schema subgraph`, `schema split`)
+- `subgraph.rs` projects the supergraph onto one graph, reading the join spec
+  (v0.2 to v0.5, Federation 2). A Federation 1 supergraph (join v0.1, or
+  `@core`) is `Error::MalformedSupergraph`, a schema that is not a supergraph
+  `Error::NotASupergraph`, and a blank one passes through (only the name's
+  form is checked, when splitting)
+- A type is in a graph when it has `@join__type(graph:)` for it; a
+  non-machinery type with none is in every graph. `key:` becomes `@key`
+  (`resolvable: false` kept), `extension: true` an `extend type`, and
+  `isInterfaceObject` an object with `@interfaceObject`. A field is in the
+  graphs its `@join__field`s name, or every graph of its type when it has none
+  (one with no `graph:` puts it in none). `external`, `requires`, `provides`,
+  `override`/`overrideLabel`, and `type:` become `@external`, `@requires`,
+  `@provides`, `@override(from:, label:)`, and the field's type there.
+  `@join__implements`, `@join__unionMember`, and `@join__enumValue` give each
+  graph its interfaces, members, and values; a type with none keeps all that
+  are in the graph. `@join__directive(graphs:, name:, args:)` becomes
+  `@name(args)` in those graphs
+- What a supergraph does not record is rebuilt: `@shareable` goes on a field
+  more than one graph resolves non-externally, or on the type when all its
+  fields are; the directives composition carries (`CARRIED`: `@tag`,
+  `@inaccessible`, `@authenticated`, and the rest) are renamed back from any
+  `as:` and go on the element in every graph that has it. An `@external` field
+  no key, `@requires`, or `@provides` of the graph names is dropped, and the
+  cascade (`cascade`) removes what that empties. Any other directive of a
+  linked spec is dropped with a warning
+- The output opens with `@link(url: ".../federation/v2.N", import: [...])`
+  importing exactly the federation directives it uses, at the lowest version
+  defining all of them (`FEDERATION`: 2.3 for `@interfaceObject` or a key on
+  an interface, 2.5 `@authenticated`/`@requiresScopes`, 2.6 `@policy`, 2.7 an
+  `@override` label, 2.9 `@cost`/`@listSize`). The roots are those the graph
+  keeps, named as the supergraph names them. With no roots it is
+  `extend schema`, which graphql-parser can neither print nor parse, so it is
+  printed as a `scalar` carrying the same directives and renamed. That output,
+  like Apollo's own Federation 2 subgraphs that open with `extend schema`,
+  cannot be read back by this tool
+- Lost, as in any extraction: the root type names a subgraph used, argument
+  differences between subgraphs, and directives composition did not keep
+- `schema subgraph` fails an unknown name with `Error::UnknownSubgraph`, a
+  did-you-mean from `query_target::suggest`, and every name there is. A graph
+  left with no types prints nothing, with a note
+- `schema split` writes `<dir>/<name>.graphql` per graph in `join__Graph`
+  order, creating `dir`, replacing those files and touching no other, with a
+  note per file (and per graph skipped as empty). Names come from the input
+  and become paths, so before anything is extracted or written each must be a
+  plain file name (`[A-Za-z0-9_-]`, which rules out `../` and absolute
+  paths), and no two may differ only in case, as they would collide on a
+  case-insensitive filesystem; either is `Error::MalformedSupergraph`. A write
+  failure is `Error::WriteFile`, naming the path (`Write` stays about stdout)
+
 ### Sort Feature
 - Sorts definitions by the key (category, name): schema definition, directives,
   types, type extensions, with all type kinds interleaved and extensions keyed
@@ -410,6 +520,7 @@ parse and run every command in it. The details:
   instead under `CI`, so a sandboxed pass has not run them. The `/dev/full`
   write-failure test runs on Linux only
 - Test-only crates: `indoc` for multi-line literals, `insta` for the skill
-  and example snapshots, `serde_norway` to parse the skill's frontmatter (the maintained fork
+  and example snapshots, `tempfile` for the directories `schema split` writes
+  to, `serde_norway` to parse the skill's frontmatter (the maintained fork
   of the deprecated `serde_yaml`), and `rustix` (Unix only) to open the
   pseudo-terminal. `pretty_assertions` is used only by tests too

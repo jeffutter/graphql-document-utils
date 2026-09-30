@@ -1,0 +1,59 @@
+extend schema
+  @link(
+    url: "https://specs.apollo.dev/federation/v2.7"
+    import: [
+      "@key"
+      "@external"
+      "@requires"
+      "@provides"
+      "@override"
+      "@interfaceObject"
+    ]
+  )
+
+type Query {
+  review(id: ID!): Review
+}
+
+type Review {
+  body: String
+  kind: ProductKind
+  author: User @provides(fields: "username")
+  product: Product
+}
+
+type User @key(fields: "id") {
+  id: ID!
+  username: String @external
+  reviews: [Review]
+}
+
+type Product @key(fields: "upc") {
+  upc: String!
+  weight: Int @external
+  shipping: Int @requires(fields: "weight")
+  name: String @override(from: "products", label: "percent(50)")
+  reviews: [Review]
+}
+
+type Org @key(fields: "id", resolvable: false) {
+  id: ID!
+}
+
+type Team @key(fields: "slug org { id }") {
+  slug: String!
+  org: Org!
+  rating: Int
+}
+
+type Media @key(fields: "id") @interfaceObject {
+  id: ID!
+  reviews: [Review]
+}
+
+union SearchResult = Review
+
+enum ProductKind {
+  BOOK
+  VIDEO
+}

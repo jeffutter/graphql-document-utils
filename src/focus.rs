@@ -1,7 +1,9 @@
 use crate::{
     error::Error,
     input::{Input, Kind},
-    query_target, util,
+    query_target,
+    supergraph::Supergraph,
+    util,
 };
 use graphql_parser::schema::TypeDefinition;
 use petgraph::graph::NodeIndex;
@@ -17,8 +19,16 @@ use std::collections::{HashMap, HashSet};
 /// that check comes after the read, and is skipped for a blank schema, which
 /// yields an empty document.
 ///
+/// A supergraph (see `Supergraph::detect`) stays one a router can load. Its
+/// machinery is kept whole (see `util::retain_with_dependencies`), and since
+/// a router needs a query root, one the roots do not reach is kept with a
+/// single field, the one `util::smallest_field` picks, along with what that
+/// field reaches.
+///
 /// A name the schema defines more than once adds a warning to `warnings`, and
-/// only its first definition is kept (see `Input::parse_schema`).
+/// only its first definition is kept (see `Input::parse_schema`), as does
+/// what a supergraph records that focusing does not follow (see
+/// `Supergraph::untracked`).
 pub fn process(
     types: &[&str],
     read_schema: impl FnOnce() -> Result<Input, Error>,
@@ -140,30 +150,69 @@ pub fn process(
     // definitions, the trimmed `schema {}`), without treating them as roots, so
     // an interface kept only because a type implements it does not bring its
     // other implementors.
-    let descendants: HashSet<&str> = types
-        .iter()
-        .filter_map(|t| type_node_map.get(&String::from(*t)))
-        .flat_map(|root_idx| petgraph::visit::Dfs::new(&g, *root_idx).iter(&g))
-        .map(|n| g[n].as_str())
-        .collect();
-    let descendants: Vec<&str> = descendants.into_iter().collect();
+    let walk = |roots: &[&str]| -> HashSet<&str> {
+        roots
+            .iter()
+            .filter_map(|t| type_node_map.get(&String::from(*t)))
+            .flat_map(|root_idx| petgraph::visit::Dfs::new(&g, *root_idx).iter(&g))
+            .map(|n| g[n].as_str())
+            .collect()
+    };
+    let mut descendants = walk(types);
 
-    let focused = util::retain_with_dependencies(&schema_ast, &descendants, &[], |td| td.clone());
+    // A supergraph's query root, when the roots do not reach it, and the one
+    // field it keeps.
+    let mut query_root = None;
+    if let Some(supergraph) = Supergraph::detect(&schema_ast) {
+        warnings.extend(supergraph.untracked(&merged));
+        let root = util::detect_root_types(&schema_ast).query;
+        if let Some(TypeDefinition::Object(obj)) = merged.get(&root) {
+            if !descendants.contains(root.as_str()) {
+                if let Some(field) = util::smallest_field(&merged, &obj.fields) {
+                    if let Some(returns) = util::named_type(&field.field_type) {
+                        descendants.extend(walk(&[returns.as_str()]));
+                    }
+                    if !descendants.contains(root.as_str()) {
+                        query_root = Some((root.clone(), field.name.clone()));
+                    }
+                }
+            }
+        }
+    }
+    let mut descendants: Vec<&str> = descendants.into_iter().collect();
+    if let Some((root, _)) = &query_root {
+        descendants.push(root);
+    }
+
+    let focused = util::retain_with_dependencies(&schema_ast, &descendants, &[], |td| match td {
+        TypeDefinition::Object(obj) => match &query_root {
+            Some((root, field)) if *root == obj.name => {
+                let mut obj = obj.clone();
+                obj.fields.retain(|f| f.name == *field);
+                TypeDefinition::Object(obj)
+            }
+            _ => td.clone(),
+        },
+        _ => td.clone(),
+    });
 
     Ok(format!("{focused}"))
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{focus, input::Input, util};
+    use crate::{focus, input::Input, supergraph::Supergraph, util};
     use indoc::indoc;
     use pretty_assertions::assert_eq;
 
     /// Focuses and checks that the output names only types and directives it
-    /// defines.
+    /// defines, and that a supergraph stays one (`util::assert_valid_supergraph`).
     fn focused(schema: &str, types: &[&str]) -> String {
         let result = focus::process(types, || Ok(Input::inline(schema)), &mut Vec::new()).unwrap();
         util::assert_self_contained(&result);
+        if Supergraph::detect(&graphql_parser::parse_schema::<String>(schema).unwrap()).is_some() {
+            util::assert_valid_supergraph(&result);
+        }
         result
     }
 
@@ -1161,5 +1210,52 @@ mod tests {
         "};
 
         assert_eq!(focused(schema, &["User"]).trim(), expected_schema.trim());
+    }
+
+    const SUPERGRAPH: &str = include_str!("../tests/fixtures/supergraph.graphql");
+
+    /// A focused supergraph is still one: its `schema` block and every
+    /// definition its linked specs make stay, and when the given types do not
+    /// reach the query root, it is added with the one field `schema prune`
+    /// would keep of it, which here returns `User`, walked like a given type.
+    #[test]
+    fn test_focus_on_a_supergraph_keeps_its_machinery_and_a_query_root() {
+        let output = focused(SUPERGRAPH, &["Review"]);
+        for kept in [
+            "schema @link(url: \"https://specs.apollo.dev/link/v1.0\") @link(url: \"https://specs.apollo.dev/join/v0.4\", for: EXECUTION) @link(url: \"https://specs.apollo.dev/inaccessible/v0.2\", for: SECURITY) {\n  query: Query\n}",
+            "enum join__Graph {",
+            "directive @join__field(",
+            "type Query @join__type(graph: ACCOUNTS) @join__type(graph: PRODUCTS) @join__type(graph: REVIEWS) {\n  me: User @join__field(graph: ACCOUNTS)\n}",
+            "type User implements Node",
+        ] {
+            assert!(output.contains(kept), "{kept} not in:\n{output}");
+        }
+        assert!(!output.contains("type Team"), "{output}");
+    }
+
+    /// Given, or reached, the query root keeps all of its fields.
+    #[test]
+    fn test_focus_on_a_supergraph_keeps_a_query_root_it_reaches_whole() {
+        let output = focused(SUPERGRAPH, &["Query"]);
+        assert!(
+            output.contains("  review(id: ID!): Review @join__field(graph: REVIEWS)\n"),
+            "{output}"
+        );
+        assert!(
+            output.contains("  me: User @join__field(graph: ACCOUNTS)\n"),
+            "{output}"
+        );
+    }
+
+    /// A type the query root's field does not reach is still in a valid
+    /// supergraph (checked by `focused`).
+    #[test]
+    fn test_focus_on_a_supergraph_adds_what_the_query_root_field_returns() {
+        let output = focused(SUPERGRAPH, &["ProductKind"]);
+        assert!(
+            output.contains("  me: User @join__field(graph: ACCOUNTS)\n}"),
+            "{output}"
+        );
+        assert!(output.contains("enum ProductKind"), "{output}");
     }
 }

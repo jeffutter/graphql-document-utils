@@ -1,6 +1,6 @@
 use crate::input::{Kind, Origin};
 use graphql_parser::Pos;
-use std::{fmt, io, process::ExitCode};
+use std::{fmt, io, path::PathBuf, process::ExitCode};
 
 /// A problem with what the user gave the tool, or with where its output goes,
 /// as opposed to a bug in it.
@@ -92,11 +92,37 @@ pub enum Error {
     #[error("`{name}` is a built-in scalar, which {origin} does not define; `schema focus` takes types the schema defines")]
     BuiltInScalar { name: String, origin: Origin },
 
+    /// `schema subgraph` or `split` was given a schema that is not a
+    /// supergraph, so there are no subgraphs to take from it.
+    #[error("schema {origin} is not a supergraph; `schema subgraph` and `schema split` take one composed by Apollo Federation 2, whose `schema` links the join spec with `@link`")]
+    NotASupergraph { origin: Origin },
+
+    /// `schema subgraph` was given a name none of the supergraph's subgraphs
+    /// has. `available` lists those it has.
+    #[error("unknown subgraph `{name}` in {origin}{}", subgraphs(.suggestion, .available))]
+    UnknownSubgraph {
+        name: String,
+        origin: Origin,
+        suggestion: Option<String>,
+        available: Vec<String>,
+    },
+
+    /// A supergraph records something that cannot be read: a field set that
+    /// is not a selection, a subgraph name that cannot be a file name, or a
+    /// Federation 1 supergraph, which `schema subgraph` and `split` do not
+    /// read.
+    #[error("invalid supergraph {origin}: {message}")]
+    MalformedSupergraph { origin: Origin, message: String },
+
     /// The document could not be written to stdout, as when it is a file on
     /// a full disk. A reader closing the pipe early is not an error; `emit`
     /// treats that as success.
     #[error("cannot write output: {}", io_message(.source))]
     Write { source: io::Error },
+
+    /// `schema split` could not create its directory or write a file in it.
+    #[error("cannot write '{}': {}", .path.display(), io_message(.source))]
+    WriteFile { path: PathBuf, source: io::Error },
 }
 
 impl Error {
@@ -138,7 +164,13 @@ impl Error {
             Error::FieldInSchemaFocus { .. } | Error::BuiltInScalar { .. } => {
                 "a field or built-in scalar given to `schema focus`"
             }
+            Error::NotASupergraph { .. } => {
+                "a schema that is not a supergraph given to `schema subgraph` or `split`"
+            }
+            Error::UnknownSubgraph { .. } => "an unknown subgraph name",
+            Error::MalformedSupergraph { .. } => "an invalid or Federation 1 supergraph",
             Error::Write { .. } => "a failed write to stdout (as on a full disk)",
+            Error::WriteFile { .. } => "a file `schema split` cannot write",
         }
     }
 
@@ -189,7 +221,22 @@ impl Error {
                 name: target(),
                 origin: origin(),
             },
+            Error::NotASupergraph { origin: origin() },
+            Error::UnknownSubgraph {
+                name: target(),
+                origin: origin(),
+                suggestion: None,
+                available: Vec::new(),
+            },
+            Error::MalformedSupergraph {
+                origin: origin(),
+                message: String::new(),
+            },
             Error::Write { source: source() },
+            Error::WriteFile {
+                path: PathBuf::new(),
+                source: source(),
+            },
         ]
     }
 
@@ -262,6 +309,32 @@ fn did_you_mean(suggestion: &Option<String>) -> String {
         .unwrap_or_default()
 }
 
+/// `"; did you mean `a`? Its subgraphs are `a`, `b` and `c`"`, or from
+/// "its" on without a suggestion.
+fn subgraphs(suggestion: &Option<String>, available: &[String]) -> String {
+    let listed = match available {
+        [] => "it has no subgraphs".to_string(),
+        [one] => format!("its one subgraph is `{one}`"),
+        [rest @ .., last] => {
+            let rest: Vec<String> = rest.iter().map(|name| format!("`{name}`")).collect();
+            format!("its subgraphs are {} and `{last}`", rest.join(", "))
+        }
+    };
+    match suggestion {
+        Some(suggestion) => {
+            let mut chars = listed.chars();
+            let listed: String = chars
+                .next()
+                .into_iter()
+                .flat_map(char::to_uppercase)
+                .chain(chars)
+                .collect();
+            format!("; did you mean `{suggestion}`? {listed}")
+        }
+        None => format!("; {listed}"),
+    }
+}
+
 /// Where the document `path` belongs on the command line. The query commands
 /// read their query from `-q`; `schema focus` reads a single schema from `-s`.
 fn pass_with_flag(kind: Kind, path: &str) -> String {
@@ -291,7 +364,6 @@ fn io_message(error: &io::Error) -> String {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use std::path::PathBuf;
 
     fn file(path: &str) -> Origin {
         Origin::File(PathBuf::from(path))
@@ -329,10 +401,14 @@ mod tests {
                 Error::NoFields { .. } => 9,
                 Error::FieldInSchemaFocus { .. } => 10,
                 Error::BuiltInScalar { .. } => 11,
-                Error::Write { .. } => 12,
+                Error::NotASupergraph { .. } => 12,
+                Error::UnknownSubgraph { .. } => 13,
+                Error::MalformedSupergraph { .. } => 14,
+                Error::Write { .. } => 15,
+                Error::WriteFile { .. } => 16,
             })
             .collect();
-        assert_eq!(places, (0..=12).collect::<Vec<_>>());
+        assert_eq!(places, (0..=16).collect::<Vec<_>>());
     }
 
     /// A usage error exits as clap's own do, which the skill and the help say.
@@ -405,6 +481,46 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "cannot write output: No space left on device"
+        );
+    }
+
+    #[test]
+    fn unknown_subgraph_suggests_and_lists_the_subgraphs() {
+        let unknown = |suggestion: Option<&str>, available: &[&str]| {
+            Error::UnknownSubgraph {
+                name: "acounts".to_string(),
+                origin: file("s.graphql"),
+                suggestion: suggestion.map(str::to_string),
+                available: available.iter().map(|name| name.to_string()).collect(),
+            }
+            .to_string()
+        };
+
+        assert_eq!(
+            unknown(Some("accounts"), &["accounts", "products", "reviews"]),
+            "unknown subgraph `acounts` in 's.graphql'; did you mean `accounts`? Its subgraphs are `accounts`, `products` and `reviews`"
+        );
+        assert_eq!(
+            unknown(None, &["products"]),
+            "unknown subgraph `acounts` in 's.graphql'; its one subgraph is `products`"
+        );
+        assert_eq!(
+            unknown(None, &[]),
+            "unknown subgraph `acounts` in 's.graphql'; it has no subgraphs"
+        );
+    }
+
+    #[test]
+    fn write_file_names_the_path() {
+        let error = Error::WriteFile {
+            path: PathBuf::from("out/accounts.graphql"),
+            source: io::Error::from_raw_os_error(13),
+        };
+
+        assert_eq!(error.exit_code(), ExitCode::FAILURE);
+        assert_eq!(
+            error.to_string(),
+            "cannot write 'out/accounts.graphql': Permission denied"
         );
     }
 
