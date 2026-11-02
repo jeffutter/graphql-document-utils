@@ -18,7 +18,9 @@ pub enum Error {
 
     /// Both documents were to be read from stdin, which holds only one. A
     /// usage error, like `NoInput`.
-    #[error("cannot read both the schema and the query from stdin; pass one of them as a file with -s FILE or -q FILE")]
+    #[error(
+        "cannot read both the schema and the query from stdin; pass one of them as a file with -s FILE or -q FILE"
+    )]
     StdinTwice,
 
     /// A document could not be read: a missing file, a directory, or bytes
@@ -89,12 +91,16 @@ pub enum Error {
 
     /// `schema focus` was given a built-in scalar the schema does not define,
     /// so there is no definition to keep.
-    #[error("`{name}` is a built-in scalar, which {origin} does not define; `schema focus` takes types the schema defines")]
+    #[error(
+        "`{name}` is a built-in scalar, which {origin} does not define; `schema focus` takes types the schema defines"
+    )]
     BuiltInScalar { name: String, origin: Origin },
 
     /// `schema subgraph` or `split` was given a schema that is not a
     /// supergraph, so there are no subgraphs to take from it.
-    #[error("schema {origin} is not a supergraph; `schema subgraph`, `schema split`, and `query plan` take one composed by Apollo Federation 2, whose `schema` links the join spec with `@link`")]
+    #[error(
+        "schema {origin} is not a supergraph; `schema subgraph`, `schema split`, and `query plan` take one composed by Apollo Federation 2, whose `schema` links the join spec with `@link`"
+    )]
     NotASupergraph { origin: Origin },
 
     /// `query plan` was given a query of several operations and no
@@ -163,11 +169,7 @@ impl Error {
     /// The status the process exits with: 2 for a usage error, the same as
     /// clap's own, and 1 for everything else.
     pub fn status(&self) -> u8 {
-        if self.is_usage() {
-            2
-        } else {
-            1
-        }
+        if self.is_usage() { 2 } else { 1 }
     }
 
     pub fn exit_code(&self) -> ExitCode {

@@ -13,25 +13,26 @@
 //! planner, whose own parser and validation decide the rest.
 
 use crate::{
+    Output,
     error::Error,
     input::{Input, Origin},
     query_target,
-    supergraph::{string_argument, Supergraph},
-    util, Output,
+    supergraph::{Supergraph, string_argument},
+    util,
 };
 use apollo_compiler::{
-    validation::{DiagnosticList, Valid},
     ExecutableDocument, Name,
+    validation::{DiagnosticList, Valid},
 };
 use apollo_federation::query_plan::{
+    ConditionNode, DeferNode, FetchDataPathElement, FetchDataRewrite, FetchNode, FlattenNode,
+    PlanNode, QueryPathElement, QueryPlan, TopLevelPlanNode,
     query_planner::{
         QueryPlanIncrementalDeliveryConfig, QueryPlanOptions, QueryPlanner, QueryPlannerConfig,
     },
-    ConditionNode, DeferNode, FetchDataPathElement, FetchDataRewrite, FetchNode, FlattenNode,
-    PlanNode, QueryPathElement, QueryPlan, TopLevelPlanNode,
 };
 use graphql_parser::schema::{Document, TypeDefinition};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::{borrow::Cow, collections::BTreeSet};
 
 /// How `query plan` prints the plan.

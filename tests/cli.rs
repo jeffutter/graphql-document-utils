@@ -508,7 +508,9 @@ fn a_blank_schema_fails_the_query_commands() {
             assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
             assert_eq!(
                 stderr(&output),
-                format!("error: schema '{blank}' is empty; pass the schema the query is written against with -s\n")
+                format!(
+                    "error: schema '{blank}' is empty; pass the schema the query is written against with -s\n"
+                )
             );
             assert!(output.stdout.is_empty());
         }

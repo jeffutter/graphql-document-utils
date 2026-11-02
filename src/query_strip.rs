@@ -1,8 +1,9 @@
 use crate::{
+    Output,
     error::Error,
     input::Input,
     query_target::{self, Matcher},
-    util, Output,
+    util,
 };
 use graphql_parser::{
     query::{
@@ -1192,19 +1193,21 @@ mod tests {
             }
         "};
 
-        assert!(notes(
-            SCHEMA,
-            query,
-            &["User", "Profile"],
-            indoc! {"
+        assert!(
+            notes(
+                SCHEMA,
+                query,
+                &["User", "Profile"],
+                indoc! {"
                 query Q {
                   company {
                     id
                   }
                 }
             "}
-        )
-        .is_empty());
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -2274,7 +2277,9 @@ mod tests {
         );
         assert_eq!(
             warnings,
-            ["fragment `UserFields` is defined more than once in (stdin) (at 7:1, 12:1); only the first is used"]
+            [
+                "fragment `UserFields` is defined more than once in (stdin) (at 7:1, 12:1); only the first is used"
+            ]
         );
     }
 
@@ -2308,7 +2313,9 @@ mod tests {
         assert_eq!(error.to_string(), "`User` has no field `email`");
         assert_eq!(
             warnings,
-            ["type `User` is defined more than once in (stdin) (at 5:1, 9:1); only the first is used"]
+            [
+                "type `User` is defined more than once in (stdin) (at 5:1, 9:1); only the first is used"
+            ]
         );
     }
 

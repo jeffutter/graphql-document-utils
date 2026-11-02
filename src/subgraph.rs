@@ -18,22 +18,23 @@
 //! merged them, and custom directives it did not compose.
 
 use crate::{
+    Output,
     error::Error,
     input::Input,
     query_target,
     supergraph::{
-        enum_argument, is_true, string_argument, type_directives, FieldSet, Graph, Supergraph,
+        FieldSet, Graph, Supergraph, enum_argument, is_true, string_argument, type_directives,
     },
-    util, Output,
+    util,
 };
 use graphql_parser::{
+    Pos,
     query::{Selection, Value},
     schema::{
         Definition, Directive, DirectiveLocation, Document, EnumType, Field, InputObjectType,
         InputValue, InterfaceType, ObjectType, ScalarType, SchemaDefinition, TypeDefinition,
         UnionType,
     },
-    Pos,
 };
 use std::{
     collections::{BTreeSet, HashMap, HashSet},

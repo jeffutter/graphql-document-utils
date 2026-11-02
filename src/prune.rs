@@ -1,8 +1,9 @@
 use crate::{
+    Output,
     error::Error,
     input::Input,
-    supergraph::{enum_argument, string_argument, FieldSet, Graph, Supergraph},
-    util, Output,
+    supergraph::{FieldSet, Graph, Supergraph, enum_argument, string_argument},
+    util,
 };
 use graphql_parser::{
     query::{Definition as QueryDef, FragmentDefinition, Selection, SelectionSet, TypeCondition},
@@ -61,7 +62,7 @@ pub fn process(schema: &Input, query: &Input, warnings: &mut Vec<String>) -> Res
                 return Ok(Output {
                     document: String::new(),
                     notes: vec!["the query is empty; output is empty".to_string()],
-                })
+                });
             }
         };
 

@@ -1,8 +1,9 @@
 use crate::{
+    Output,
     error::Error,
     input::Input,
     query_target::{self, Matcher},
-    util, Output,
+    util,
 };
 use graphql_parser::query::{
     Definition as QueryDef, Document as QueryDoc, Field as QueryField, FragmentDefinition,

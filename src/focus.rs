@@ -601,7 +601,9 @@ mod tests {
         );
         assert_eq!(
             warnings,
-            ["type `User` is defined more than once in (stdin) (at 5:1, 9:1); only the first is used"]
+            [
+                "type `User` is defined more than once in (stdin) (at 5:1, 9:1); only the first is used"
+            ]
         );
     }
 

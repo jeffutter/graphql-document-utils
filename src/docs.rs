@@ -697,7 +697,7 @@ pub(crate) mod extract;
 #[cfg(test)]
 pub(crate) mod tests {
     use super::extract::{self, invocations};
-    use crate::{error::Error, input::Kind, Args};
+    use crate::{Args, error::Error, input::Kind};
     use clap::{CommandFactory, Parser};
 
     /// The top-level help's common tasks, as they are attached to the

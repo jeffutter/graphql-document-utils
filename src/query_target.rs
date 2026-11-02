@@ -203,7 +203,7 @@ impl<'s, 't> Matcher<'s, 't> {
     }
 
     /// The targets, as given.
-    pub fn targets(&self) -> impl Iterator<Item = &'t str> + '_ {
+    pub fn targets(&self) -> impl Iterator<Item = &'t str> {
         self.targets.iter().map(|(target, _)| *target)
     }
 

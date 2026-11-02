@@ -875,7 +875,7 @@ fn walk_field_set(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_field_set, Supergraph};
+    use super::{Supergraph, parse_field_set};
     use crate::util;
     use graphql_parser::parse_schema;
     use indoc::indoc;
@@ -1087,7 +1087,9 @@ mod tests {
         let sg = Supergraph::detect(&doc).unwrap();
         assert_eq!(
             sg.untracked(&util::merged_type_definitions(&doc)),
-            ["`Query.a` takes context arguments (`@join__field(contextArguments:)`), which are not followed, so fields they select may be missing from the output"]
+            [
+                "`Query.a` takes context arguments (`@join__field(contextArguments:)`), which are not followed, so fields they select may be missing from the output"
+            ]
         );
         let doc = parse_schema::<String>(SUPERGRAPH).unwrap();
         let sg = Supergraph::detect(&doc).unwrap();

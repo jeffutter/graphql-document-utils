@@ -14,7 +14,7 @@ use std::{collections::BTreeMap, fmt::Write};
 
 use clap::{ArgAction, CommandFactory};
 
-use crate::{error::Error, Args};
+use crate::{Args, error::Error};
 
 /// When the skill applies, which is all an agent sees of it before loading
 /// it, so it lists what someone would ask for rather than what the tool has.

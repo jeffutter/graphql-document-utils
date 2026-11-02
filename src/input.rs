@@ -1,6 +1,6 @@
 use crate::error::Error;
 use clap_stdin::{FileOrStdin, StdinError};
-use graphql_parser::{query, schema, Pos};
+use graphql_parser::{Pos, query, schema};
 use std::{
     collections::HashMap,
     fmt, fs, io,
