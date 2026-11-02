@@ -12,12 +12,12 @@
   };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      flake-utils,
-      rust-overlay,
-      crane,
+    { self
+    , nixpkgs
+    , flake-utils
+    , rust-overlay
+    , crane
+    ,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -32,7 +32,7 @@
 
         envVars =
           { }
-          // (lib.attrsets.optionalAttrs pkgs.stdenv.isLinux {
+          // (lib.attrsets.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
             RUSTFLAGS = "-Clinker=clang -Clink-arg=--ld-path=${pkgs.mold}/bin/mold";
           });
 
@@ -46,7 +46,9 @@
               rust-analyzer
               rustc
             ];
-            buildInputs = with pkgs; [  ] ++ lib.optionals stdenv.isDarwin [ libiconv ];
+            buildInputs =
+              with pkgs;
+              [ ] ++ lib.optionals stdenv.hostPlatform.isDarwin [ libiconv ];
           }
           // envVars
         );
