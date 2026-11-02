@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "graphql-document-utils"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "apollo-compiler",
  "apollo-federation",
