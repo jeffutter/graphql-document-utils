@@ -346,7 +346,8 @@ fn the_readme_samples_are_the_fixtures() {
 }
 
 /// A `graphql` block right after a `bash` block of one command is what that
-/// command prints, exactly.
+/// command prints, exactly, and so is a `text` block, for output that is not
+/// GraphQL, such as a query plan.
 #[test]
 fn the_readme_shows_what_its_commands_print() {
     let fences = extract::fences(README);
@@ -354,7 +355,9 @@ fn the_readme_shows_what_its_commands_print() {
         .iter()
         .zip(&fences[1..])
         .filter(|(command, output)| {
-            command.info == "bash" && output.info == "graphql" && output.before.trim().is_empty()
+            command.info == "bash"
+                && matches!(output.info.as_str(), "graphql" | "text")
+                && output.before.trim().is_empty()
         })
         .collect();
     assert!(!shown.is_empty(), "the README shows output");

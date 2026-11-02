@@ -285,12 +285,17 @@ fn a_schema_file_given_as_a_type_fails_without_reading_stdin() {
 fn a_query_from_a_terminal_is_a_usage_error() {
     let schema = schema_file("terminal-query");
     let schema = schema.to_str().unwrap();
+    let supergraph = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/supergraph.graphql"
+    );
 
     for args in [
         &["query", "normalize"][..],
         &["query", "normalize", "-q", "-"][..],
         &["query", "focus", "-s", schema, "User"][..],
         &["query", "strip", "-s", schema, "User.name"][..],
+        &["query", "plan", "-s", supergraph][..],
         &["schema", "prune", "-s", schema, "-q", "-"][..],
     ] {
         let Some(output) = run_with_terminal_stdin(args) else {
@@ -345,6 +350,25 @@ fn a_bad_target_wins_over_a_query_from_a_terminal() {
     assert_eq!(output.status.code(), Some(1));
     assert!(
         stderr(&output).starts_with("error: unknown type `Usr` in"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+/// `query plan` checks its supergraph before reading the query, so a schema
+/// that is not one is reported even when there is no query to read.
+#[cfg(unix)]
+#[test]
+fn a_bad_supergraph_wins_over_a_query_from_a_terminal() {
+    let schema = schema_file("terminal-bad-supergraph");
+    let schema = schema.to_str().unwrap();
+
+    let Some(output) = run_with_terminal_stdin(&["query", "plan", "-s", schema]) else {
+        return;
+    };
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).starts_with(&format!("error: schema '{schema}' is not a supergraph;")),
         "{}",
         stderr(&output)
     );
@@ -474,9 +498,13 @@ fn a_blank_schema_fails_the_query_commands() {
     let blank = scratch_file("blank-query-schema", "schema.graphql", "");
     let blank = blank.to_str().unwrap();
 
-    for command in ["focus", "strip"] {
+    for args in [
+        &["query", "focus", "-s", blank, "User"][..],
+        &["query", "strip", "-s", blank, "User"][..],
+        &["query", "plan", "-s", blank][..],
+    ] {
         for input in [QUERY, ""] {
-            let output = run_with_input(&["query", command, "-s", blank, "User"], input);
+            let output = run_with_input(args, input);
             assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
             assert_eq!(
                 stderr(&output),
@@ -587,6 +615,7 @@ fn every_help_states_the_output_conventions() {
         &["query", "normalize"][..],
         &["query", "focus"][..],
         &["query", "strip"][..],
+        &["query", "plan"][..],
         &["schema"][..],
         &["schema", "format"][..],
         &["schema", "focus"][..],
@@ -598,8 +627,8 @@ fn every_help_states_the_output_conventions() {
         for flag in ["-h", "--help"] {
             let help = success(run_with_open_stdin(&[command, &[flag]].concat()));
             for convention in [
-                "Output is a GraphQL document on stdout ending in one newline",
-                "Errors, warnings, and notes go to stderr.",
+                "Output is a GraphQL document on stdout (a query plan, for `query plan`) ending\nin one newline",
+                "Errors, warnings, and\nnotes go to stderr.",
                 "Exit codes: 0 on success",
             ] {
                 assert!(help.contains(convention), "{command:?} {flag}:\n{help}");
@@ -706,7 +735,7 @@ fn bad_input_exits_1() {
         (
             &["schema", "subgraph", "a"][..],
             SCHEMA,
-            "error: schema (stdin) is not a supergraph; `schema subgraph` and `schema split` take one composed by Apollo Federation 2, whose `schema` links the join spec with `@link`\n",
+            "error: schema (stdin) is not a supergraph; `schema subgraph`, `schema split`, and `query plan` take one composed by Apollo Federation 2, whose `schema` links the join spec with `@link`\n",
         ),
         (
             &["schema", "subgraph", "A"][..],

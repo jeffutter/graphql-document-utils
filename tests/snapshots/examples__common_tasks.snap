@@ -65,6 +65,46 @@ query GetUser($id: ID!, $first: Int, $filter: SearchFilter) {
   }
 }
 
+$ graphql-document-utils query plan -s supergraph.graphql -q supergraph-query.graphql
+exit: 0
+stdout:
+QueryPlan {
+  Sequence {
+    Fetch(service: "products") {
+      {
+        topProducts(first: 3) {
+          __typename
+          upc
+          name
+          weight
+        }
+      }
+    },
+    Flatten(path: "topProducts.@") {
+      Fetch(service: "reviews") {
+        {
+          ... on Product {
+            __typename
+            upc
+            weight
+          }
+        } =>
+        {
+          ... on Product {
+            shipping
+            reviews {
+              body
+              author {
+                username
+              }
+            }
+          }
+        }
+      },
+    },
+  },
+}
+
 $ graphql-document-utils schema prune -s schema.graphql -q query.graphql
 exit: 0
 stdout:

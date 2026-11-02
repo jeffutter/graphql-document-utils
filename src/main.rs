@@ -4,6 +4,7 @@ mod focus;
 mod input;
 mod prune;
 mod query_focus;
+mod query_plan;
 mod query_strip;
 mod query_target;
 mod skill;
@@ -119,6 +120,30 @@ enum QueryCommands {
             help = docs::QUERY_STRIP_TARGETS,
         )]
         targets: Vec<String>,
+    },
+    #[command(
+        about = docs::QUERY_PLAN_ABOUT,
+        long_about = docs::QUERY_PLAN_LONG_ABOUT,
+        after_help = docs::QUERY_PLAN_EXAMPLES,
+    )]
+    Plan {
+        #[arg(short, long, help = docs::QUERY_PLAN_SCHEMA)]
+        schema: PathBuf,
+
+        #[arg(
+            short, long, default_value = "-", hide_default_value = true,
+            help = docs::QUERY_FROM_STDIN,
+        )]
+        query: FileOrStdin,
+
+        #[arg(long, value_name = "NAME", help = docs::QUERY_PLAN_OPERATION)]
+        operation: Option<String>,
+
+        #[arg(long = "override-label", value_name = "LABEL", help = docs::QUERY_PLAN_OVERRIDE_LABEL)]
+        override_labels: Vec<String>,
+
+        #[arg(long, default_value_t = false, help = docs::QUERY_PLAN_JSON)]
+        json: bool,
     },
 }
 
@@ -337,6 +362,31 @@ fn run(
                     &schema,
                     &targets,
                     || Input::read(query, Kind::Query),
+                    warnings,
+                )?
+            }
+            QueryCommands::Plan {
+                schema,
+                query,
+                operation,
+                override_labels,
+                json,
+            } => {
+                let schema = Input::from_path(&schema, Kind::Schema)?;
+                let format = if json {
+                    query_plan::Format::Json
+                } else {
+                    query_plan::Format::Text
+                };
+                let options = query_plan::Options {
+                    operation: operation.as_deref(),
+                    override_labels: &override_labels,
+                    format,
+                };
+                query_plan::process(
+                    &schema,
+                    || Input::read(query, Kind::Query),
+                    options,
                     warnings,
                 )?
             }

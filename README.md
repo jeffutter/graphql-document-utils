@@ -2,7 +2,8 @@
 
 `graphql-document-utils` rewrites GraphQL documents from the command line:
 normalize, focus, and strip queries; format, sort, focus, and prune schemas;
-and split an Apollo Federation supergraph into its subgraph schemas.
+split an Apollo Federation supergraph into its subgraph schemas; and show the
+plan Apollo Router follows to run a query against one.
 
 For agents: `graphql-document-utils skill` prints a complete usage guide.
 
@@ -15,6 +16,8 @@ graphql-document-utils query normalize -q query.graphql
 graphql-document-utils query focus -s schema.graphql -q query.graphql User.email
 # Remove a type or field, and everything that references it, from a query
 graphql-document-utils query strip -s schema.graphql -q query.graphql Profile
+# See how Apollo Router would run a query against a supergraph
+graphql-document-utils query plan -s supergraph.graphql -q supergraph-query.graphql
 # Cut a schema down to what a query uses
 graphql-document-utils schema prune -s schema.graphql -q query.graphql
 # Extract a type and everything it depends on from a schema
@@ -62,12 +65,16 @@ noun is `query` or `schema`.
      to read that document from stdin, as in a pipeline.
    - Outside a pipeline, pass every document with its flag. A command waits
      forever on a stdin pipe that never closes.
-   - Pass `query focus` and `query strip` the schema too, with `-s FILE`.
+   - Pass `query focus`, `query strip`, and `query plan` the schema too, with
+     `-s FILE`. `query plan` takes a supergraph.
+   - Pass `query plan` `--operation NAME` when the query has more than one
+     operation.
    - Pass `schema prune` the query too, with `-q FILE`. To pipe the query in,
      pass `-q -` and the schema with `-s FILE`.
    - A schema can be an Apollo Federation supergraph. `schema focus` and
      `schema prune` keep it one, and `query focus` and `query strip` read the
-     API schema its clients see.
+     API schema its clients see. `query plan` plans the query as Apollo
+     Router does.
 3. Pass targets to `query focus`, `query strip`, and `schema focus` as
    positional arguments.
    - Pass `query focus` and `query strip` types (`Profile`) or fields on a
@@ -97,7 +104,7 @@ noun is `query` or `schema`.
    own files instead, one per subgraph in its `-o` directory, and prints
    nothing to stdout.
 5. Read the result.
-   - Stdout holds only the GraphQL document.
+   - Stdout holds only the GraphQL document, or the plan `query plan` prints.
    - Stderr holds `error:`, `warning:`, and `note:` lines.
    - Look up the exit code under Results and exit codes below.
    - On exit 1 or 2, fix what the `error:` line names, then rerun.
@@ -496,6 +503,68 @@ than composition merged them, and directives composition did not keep. What
 it can, such as `@shareable`, is rebuilt. A subgraph with no root types, like
 `reviews` above, opens with `extend schema`, which this tool cannot read back.
 
+`query plan` shows how Apollo Router runs a query against a supergraph: which
+subgraph each part is fetched from, the operation sent to each, and what runs
+in sequence or in parallel. It plans with the Router's own query planner, from
+the `apollo-federation` crate, set up as the Router's defaults set it up. For
+the same query, products come first, then the reviews of each product, sent
+the `weight` that `shipping` requires:
+
+```bash
+graphql-document-utils query plan -s supergraph.graphql -q supergraph-query.graphql
+```
+
+```text
+QueryPlan {
+  Sequence {
+    Fetch(service: "products") {
+      {
+        topProducts(first: 3) {
+          __typename
+          upc
+          name
+          weight
+        }
+      }
+    },
+    Flatten(path: "topProducts.@") {
+      Fetch(service: "reviews") {
+        {
+          ... on Product {
+            __typename
+            upc
+            weight
+          }
+        } =>
+        {
+          ... on Product {
+            shipping
+            reviews {
+              body
+              author {
+                username
+              }
+            }
+          }
+        }
+      },
+    },
+  },
+}
+```
+
+`--json` prints the plan as the JSON the Router returns beside that text when
+a client sends the `Apollo-Expose-Query-Plan` header:
+
+```bash
+graphql-document-utils query plan -s supergraph.graphql -q supergraph-query.graphql --json
+```
+
+`name` is under a progressive `@override` labelled `percent(50)`, which the
+Router turns on for half of all requests. The plan above has it off, so
+`products` resolves `name`. `--override-label 'percent(50)'` plans a request
+that has it on, which fetches `name` from `reviews` instead.
+
 ### Pipelines
 
 Stdin holds one document, so in a pipeline the other document is a file:
@@ -523,12 +592,14 @@ Prune before focusing: `schema focus User` drops `Query`, which leaves
   empty, so the next command in a pipeline still runs. Blank means only
   whitespace, commas, and comments.
 - `1`: bad input, or output that cannot be written: an unreadable file, a parse
-  error (with line and column), a blank schema for `query focus` or
-  `query strip`, a malformed target (or a file passed as one), an unknown type
-  or field, a field or built-in scalar given to `schema focus`, a schema that is
-  not a supergraph given to `schema subgraph` or `split`, an unknown subgraph
-  name, an invalid or Federation 1 supergraph, a failed write to stdout (as on a
-  full disk), or a file `schema split` cannot write.
+  error (with line and column), a blank schema for a `query` command that takes
+  one, a malformed target (or a file passed as one), an unknown type or field, a
+  field or built-in scalar given to `schema focus`, a schema that is not a
+  supergraph given to a command that needs one, an unknown subgraph name, a
+  missing or unknown operation name for `query plan`, a query invalid against
+  the supergraph, a query the planner cannot plan, an invalid or Federation 1
+  supergraph, a failed write to stdout (as on a full disk), or a file
+  `schema split` cannot write.
 - `2`: usage error: an unknown command or flag, a missing flag or targets, no
   document to read (no flag, and stdin a terminal), or both of `schema prune`'s
   documents on stdin.
@@ -545,4 +616,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). `query plan` runs Apollo's query planner from the
+[`apollo-federation`](https://crates.io/crates/apollo-federation) crate, which
+is licensed under the Elastic License 2.0, and which the binary links.

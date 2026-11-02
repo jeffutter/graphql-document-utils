@@ -19,7 +19,7 @@ use crate::{error::Error, Args};
 /// When the skill applies, which is all an agent sees of it before loading
 /// it, so it lists what someone would ask for rather than what the tool has.
 /// One line, which YAML reads as a plain string as long as it has no `: `.
-const DESCRIPTION: &str = "Transform GraphQL documents from the command line. Use to canonicalize or diff GraphQL queries, cut a query down to the parts that reach a type or field, remove a type or field and everything that references it from a query, prune a schema to what a set of queries uses, extract a type and its dependencies from a schema, sort and format a schema, or do any of these to an Apollo Federation supergraph, split a supergraph into its subgraph schemas, or extract one subgraph from it.";
+const DESCRIPTION: &str = "Transform GraphQL documents from the command line. Use to canonicalize or diff GraphQL queries, cut a query down to the parts that reach a type or field, remove a type or field and everything that references it from a query, prune a schema to what a set of queries uses, extract a type and its dependencies from a schema, sort and format a schema, or do any of these to an Apollo Federation supergraph, split a supergraph into its subgraph schemas, extract one subgraph from it, or show the query plan Apollo Router follows to run a query against it.";
 
 /// How to run any command, in the order an agent does it. The README's usage
 /// lists the same steps.
@@ -32,6 +32,8 @@ const DESCRIPTION: &str = "Transform GraphQL documents from the command line. Us
 //   `cli::a_schema_piped_in_is_read_as_if_from_its_file`,
 //   `cli::a_command_waits_on_an_open_stdin`
 // - the other document: `docs::the_other_document_is_a_required_flag`,
+//   `query_plan::several_operations_need_a_name`,
+//   `query_plan::plans_a_query_across_subgraphs`,
 //   `cli::prune_reads_either_document_from_stdin`,
 //   `cli::prune_cannot_read_both_documents_from_stdin`
 // - files as targets: `cli::a_query_file_given_as_a_target_fails_without_reading_stdin`,
@@ -76,12 +78,16 @@ const STEPS: &str = "\
      to read that document from stdin, as in a pipeline.
    - Outside a pipeline, pass every document with its flag. A command waits
      forever on a stdin pipe that never closes.
-   - Pass `query focus` and `query strip` the schema too, with `-s FILE`.
+   - Pass `query focus`, `query strip`, and `query plan` the schema too, with
+     `-s FILE`. `query plan` takes a supergraph.
+   - Pass `query plan` `--operation NAME` when the query has more than one
+     operation.
    - Pass `schema prune` the query too, with `-q FILE`. To pipe the query in,
      pass `-q -` and the schema with `-s FILE`.
    - A schema can be an Apollo Federation supergraph. `schema focus` and
      `schema prune` keep it one, and `query focus` and `query strip` read the
-     API schema its clients see.
+     API schema its clients see. `query plan` plans the query as Apollo
+     Router does.
 3. Pass targets to `query focus`, `query strip`, and `schema focus` as
    positional arguments.
    - Pass `query focus` and `query strip` types (`Profile`) or fields on a
@@ -111,7 +117,7 @@ const STEPS: &str = "\
    own files instead, one per subgraph in its `-o` directory, and prints
    nothing to stdout.
 5. Read the result.
-   - Stdout holds only the GraphQL document.
+   - Stdout holds only the GraphQL document, or the plan `query plan` prints.
    - Stderr holds `error:`, `warning:`, and `note:` lines.
    - Look up the exit code under Results and exit codes below.
    - On exit 1 or 2, fix what the `error:` line names, then rerun.

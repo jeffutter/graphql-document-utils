@@ -79,8 +79,11 @@ parse and run every command in it. The details:
   stdout equal to the skill snapshot is written as a pointer to it; after a
   skill change accept that snapshot first. It also checks the README: a
   `graphql` fence introduced by a fixture's name (``this query,
-  `query.graphql`:``) must be that fixture byte for byte, and a `graphql` fence
-  right after a one-command `bash` fence must be exactly that command's stdout
+  `query.graphql`:``) must be that fixture byte for byte, and a `graphql` or
+  `text` fence right after a one-command `bash` fence must be exactly that
+  command's stdout. Commands are split on whitespace with no quoting, so an
+  argument needing shell quotes (`'percent(50)'`) cannot be in a runnable
+  example
 - Behavioral claims are tied to tests. Each constant in `docs.rs` and
   `skill.rs` that states behavior has a `// Tested by:` comment above it,
   naming its tests as `module::test` (`cli` and `examples` for the integration
@@ -117,8 +120,8 @@ parse and run every command in it. The details:
 - The document a command is named for (`-q` on every `query` verb, `-s` on
   every `schema` verb) is a `clap_stdin::FileOrStdin` defaulting to `-`, so the
   commands compose as filters. The other document is a plain required flag:
-  `--schema` on `query focus`/`strip` is a `PathBuf`, since it is resolved
-  against rather than transformed, and `schema prune`'s `-q` is a required
+  `--schema` on `query focus`/`strip`/`plan` is a `PathBuf`, since it is
+  resolved against rather than transformed, and `schema prune`'s `-q` is a required
   `FileOrStdin`, so `-q -` reads the query from stdin when `-s` names a file
 - `main` reads every document into an `input::Input` (`Input::read` for a
   `FileOrStdin`, `Input::from_path` for a path) and hands it to the command's
@@ -178,9 +181,10 @@ parse and run every command in it. The details:
   decide it, and `Error::summary` names each variant's kind of failure for
   the skill's exit-code list; `Error::one_of_each` lists every variant for it
   and the tests that check the help against the code
-- Stdout is only ever a GraphQL document, apart from help, `--version`, and
-  `skill`. `schema split` is the one command that writes files, and prints
-  nothing to stdout: a note per file written. `query focus`/`strip` and `schema prune` return an `Output` whose
+- Stdout is only ever a GraphQL document, apart from help, `--version`,
+  `skill`, and `query plan`'s plan. `schema split` is the one command that
+  writes files, and prints nothing to stdout: a note per file written.
+  `query focus`/`strip`/`plan` and `schema prune` return an `Output` whose
   notes `emit` prints to stderr as `note: ...`; the other commands return
   `String`, which converts into an `Output` with no notes
 - A valid target that matches nothing is not an error, so pipelines keep
@@ -404,8 +408,10 @@ parse and run every command in it. The details:
   is what those features define: `@link` and `link__*`, and per feature its
   `@prefix`, `@prefix__*`, `prefix__*`, and imported names
   (`is_machinery_type`, `is_machinery_directive`). Everything is written from
-  the public link and join specs; no Apollo code is used or copied, and the
-  `apollo-federation` crate (Elastic-2.0) is not a dependency
+  the public link and join specs; no Apollo code is used or copied. The
+  `apollo-federation` crate (Elastic-2.0) is a dependency of `query_plan.rs`
+  alone (see Query Plan Feature), since planning as the Router does means
+  running its planner; nothing else may use it
 - Field sets (`key:`, `requires:`, `provides:`) are strings holding
   selections. `parse_field_set` wraps one in `{ }` and parses it as a query,
   so nested selections and inline fragments work. `field_sets` parses every
@@ -499,6 +505,39 @@ parse and run every command in it. The details:
   paths), and no two may differ only in case, as they would collide on a
   case-insensitive filesystem; either is `Error::MalformedSupergraph`. A write
   failure is `Error::WriteFile`, naming the path (`Write` stays about stdout)
+
+### Query Plan Feature (`query plan`)
+- `query_plan.rs` hands the documents to `apollo-federation`'s
+  `QueryPlanner`, the planner Apollo Router runs, configured as the Router's
+  defaults configure it (`generate_query_fragments` and `enable_defer` on;
+  read from the Router's `configuration/mod.rs`). It uses
+  `Supergraph::new_with_router_specs`, as the Router does. Keep the
+  `apollo-federation` version in step with the Router release being matched
+- Both documents go through `Input` first, so syntax errors, repeated names
+  (warned and dropped), `Error::BlankSchema`, and `Error::NotASupergraph`
+  (`Supergraph::detect`) read as for every other command. The planner gets the
+  text as written, so its positions match the file, unless a repeat was
+  dropped, when it gets the reprinted document (`as_read`)
+- The supergraph is planned before `read_query` is called, so a bad schema
+  fails before stdin is read. What the planner rejects is
+  `Error::MalformedSupergraph` (schema), `Error::InvalidQuery` (validation
+  against the API schema, every apollo-compiler diagnostic as `line:col:
+  message`), and `Error::NoPlan` (planning)
+- The operation is picked as GraphQL's `GetOperation` does: `--operation`
+  names it, else the only one. `Error::OperationNameNeeded` and
+  `Error::UnknownOperation` (with `query_target::suggest`) list the names
+- `--override-label` fills `QueryPlanOptions::override_conditions`. The
+  Router turns `percent(N)` labels on per request, so the default plan (none
+  on) is one of several. A label no `@join__field(overrideLabel:)` names gets
+  a note
+- Text output is `QueryPlan`'s `Display`, what the Router returns as
+  `apolloQueryPlan.text`. `--json` is `json`, a hand-written mapping to the
+  Router's `apolloQueryPlan.object` shape (`kind`-tagged nodes, camelCase,
+  paths as `"key|[A,B]"`, `"@"`, `"... on T"`, `".."`), written from the
+  Router's serde attributes, not copied from its ELv2 `convert.rs`. The
+  crate's own serde output is its internal shape and is not used. Key order
+  relies on `serde_json`'s `preserve_order` feature. The Router's per-fetch
+  `schemaAwareHash` and `authorization` are left out
 
 ### Sort Feature
 - Sorts definitions by the key (category, name): schema definition, directives,

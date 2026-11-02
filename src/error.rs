@@ -94,8 +94,36 @@ pub enum Error {
 
     /// `schema subgraph` or `split` was given a schema that is not a
     /// supergraph, so there are no subgraphs to take from it.
-    #[error("schema {origin} is not a supergraph; `schema subgraph` and `schema split` take one composed by Apollo Federation 2, whose `schema` links the join spec with `@link`")]
+    #[error("schema {origin} is not a supergraph; `schema subgraph`, `schema split`, and `query plan` take one composed by Apollo Federation 2, whose `schema` links the join spec with `@link`")]
     NotASupergraph { origin: Origin },
+
+    /// `query plan` was given a query of several operations and no
+    /// `--operation` to pick one. `available` lists the named ones.
+    #[error("query {origin} has several operations; pass --operation with the one to plan{}", operations(&None, .available))]
+    OperationNameNeeded {
+        origin: Origin,
+        available: Vec<String>,
+    },
+
+    /// `query plan --operation` named an operation the query does not
+    /// define. `available` lists those it does.
+    #[error("unknown operation `{name}` in {origin}{}", operations(.suggestion, .available))]
+    UnknownOperation {
+        name: String,
+        origin: Origin,
+        suggestion: Option<String>,
+        available: Vec<String>,
+    },
+
+    /// `query plan` was given a query that does not validate against the
+    /// supergraph's API schema, such as one selecting a field it lacks.
+    #[error("query {origin} is not valid against the supergraph's API schema: {message}")]
+    InvalidQuery { origin: Origin, message: String },
+
+    /// The query planner found no plan for a valid query, as when a field
+    /// cannot be reached from the subgraphs that resolve its parent.
+    #[error("cannot plan query {origin}: {message}")]
+    NoPlan { origin: Origin, message: String },
 
     /// `schema subgraph` was given a name none of the supergraph's subgraphs
     /// has. `available` lists those it has.
@@ -154,7 +182,7 @@ impl Error {
             Error::StdinTwice => "both of `schema prune`'s documents on stdin",
             Error::Read { .. } => "an unreadable file",
             Error::Parse { .. } => "a parse error (with line and column)",
-            Error::BlankSchema { .. } => "a blank schema for `query focus` or `query strip`",
+            Error::BlankSchema { .. } => "a blank schema for a `query` command that takes one",
             Error::InvalidTarget { .. } | Error::PathAsTarget { .. } => {
                 "a malformed target (or a file passed as one)"
             }
@@ -165,9 +193,14 @@ impl Error {
                 "a field or built-in scalar given to `schema focus`"
             }
             Error::NotASupergraph { .. } => {
-                "a schema that is not a supergraph given to `schema subgraph` or `split`"
+                "a schema that is not a supergraph given to a command that needs one"
             }
             Error::UnknownSubgraph { .. } => "an unknown subgraph name",
+            Error::OperationNameNeeded { .. } | Error::UnknownOperation { .. } => {
+                "a missing or unknown operation name for `query plan`"
+            }
+            Error::InvalidQuery { .. } => "a query invalid against the supergraph",
+            Error::NoPlan { .. } => "a query the planner cannot plan",
             Error::MalformedSupergraph { .. } => "an invalid or Federation 1 supergraph",
             Error::Write { .. } => "a failed write to stdout (as on a full disk)",
             Error::WriteFile { .. } => "a file `schema split` cannot write",
@@ -227,6 +260,24 @@ impl Error {
                 origin: origin(),
                 suggestion: None,
                 available: Vec::new(),
+            },
+            Error::OperationNameNeeded {
+                origin: origin(),
+                available: Vec::new(),
+            },
+            Error::UnknownOperation {
+                name: target(),
+                origin: origin(),
+                suggestion: None,
+                available: Vec::new(),
+            },
+            Error::InvalidQuery {
+                origin: origin(),
+                message: String::new(),
+            },
+            Error::NoPlan {
+                origin: origin(),
+                message: String::new(),
             },
             Error::MalformedSupergraph {
                 origin: origin(),
@@ -312,14 +363,24 @@ fn did_you_mean(suggestion: &Option<String>) -> String {
 /// `"; did you mean `a`? Its subgraphs are `a`, `b` and `c`"`, or from
 /// "its" on without a suggestion.
 fn subgraphs(suggestion: &Option<String>, available: &[String]) -> String {
-    let listed = match available {
-        [] => "it has no subgraphs".to_string(),
-        [one] => format!("its one subgraph is `{one}`"),
-        [rest @ .., last] => {
-            let rest: Vec<String> = rest.iter().map(|name| format!("`{name}`")).collect();
-            format!("its subgraphs are {} and `{last}`", rest.join(", "))
-        }
-    };
+    suggested_from(
+        suggestion,
+        &listed("subgraph", "it has no subgraphs", available),
+    )
+}
+
+/// As `subgraphs`, for a query's operations. A query whose one operation is
+/// anonymous has no names to list.
+fn operations(suggestion: &Option<String>, available: &[String]) -> String {
+    suggested_from(
+        suggestion,
+        &listed("operation", "its one operation is anonymous", available),
+    )
+}
+
+/// `"; did you mean `a`? Its ..."` from `listed`, or `"; its ..."` without a
+/// suggestion.
+fn suggested_from(suggestion: &Option<String>, listed: &str) -> String {
     match suggestion {
         Some(suggestion) => {
             let mut chars = listed.chars();
@@ -332,6 +393,18 @@ fn subgraphs(suggestion: &Option<String>, available: &[String]) -> String {
             format!("; did you mean `{suggestion}`? {listed}")
         }
         None => format!("; {listed}"),
+    }
+}
+
+/// `"its <noun>s are `a`, `b` and `c`"`, `"its one <noun> is `a`"`, or `none`.
+fn listed(noun: &str, none: &str, available: &[String]) -> String {
+    match available {
+        [] => none.to_string(),
+        [one] => format!("its one {noun} is `{one}`"),
+        [rest @ .., last] => {
+            let rest: Vec<String> = rest.iter().map(|name| format!("`{name}`")).collect();
+            format!("its {noun}s are {} and `{last}`", rest.join(", "))
+        }
     }
 }
 
@@ -403,12 +476,16 @@ mod tests {
                 Error::BuiltInScalar { .. } => 11,
                 Error::NotASupergraph { .. } => 12,
                 Error::UnknownSubgraph { .. } => 13,
-                Error::MalformedSupergraph { .. } => 14,
-                Error::Write { .. } => 15,
-                Error::WriteFile { .. } => 16,
+                Error::OperationNameNeeded { .. } => 14,
+                Error::UnknownOperation { .. } => 15,
+                Error::InvalidQuery { .. } => 16,
+                Error::NoPlan { .. } => 17,
+                Error::MalformedSupergraph { .. } => 18,
+                Error::Write { .. } => 19,
+                Error::WriteFile { .. } => 20,
             })
             .collect();
-        assert_eq!(places, (0..=16).collect::<Vec<_>>());
+        assert_eq!(places, (0..=20).collect::<Vec<_>>());
     }
 
     /// A usage error exits as clap's own do, which the skill and the help say.

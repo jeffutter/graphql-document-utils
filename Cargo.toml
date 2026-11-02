@@ -10,12 +10,15 @@ license = "MIT"
 repository = "https://github.com/jeffutter/graphql-document-utils"
 
 [dependencies]
+apollo-compiler = "1.33.1"
+apollo-federation = "2.19.0"
 clap = { version = "4.6.7", features = ["derive"] }
 clap-stdin = "0.6.0"
 graphql-normalize = { path = "graphql-normalize-lib" }
 graphql-parser = "0.4.1"
 petgraph = "0.8.2"
 pretty_assertions = "1.4.1"
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 strsim = "0.11.1"
 thiserror = "2.0.21"
 

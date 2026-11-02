@@ -82,6 +82,8 @@ The binary, in `src/`:
   and `query strip`, so both agree on what a target matches, and the
   did-you-mean suggestions `schema focus` uses too.
 - `query_focus.rs`, `query_strip.rs`: the query commands.
+- `query_plan.rs`: `query plan`, which runs Apollo Router's query planner
+  from the `apollo-federation` crate.
 - `focus.rs`: `schema focus`, a depth-first walk over a `petgraph` graph of
   the schema's types.
 - `prune.rs`: `schema prune`, which finds the types and fields a query uses,

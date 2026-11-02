@@ -1,0 +1,110 @@
+---
+source: tests/examples.rs
+expression: transcript(&examples)
+---
+$ graphql-document-utils query plan -s supergraph.graphql -q supergraph-query.graphql
+exit: 0
+stdout:
+QueryPlan {
+  Sequence {
+    Fetch(service: "products") {
+      {
+        topProducts(first: 3) {
+          __typename
+          upc
+          name
+          weight
+        }
+      }
+    },
+    Flatten(path: "topProducts.@") {
+      Fetch(service: "reviews") {
+        {
+          ... on Product {
+            __typename
+            upc
+            weight
+          }
+        } =>
+        {
+          ... on Product {
+            shipping
+            reviews {
+              body
+              author {
+                username
+              }
+            }
+          }
+        }
+      },
+    },
+  },
+}
+
+$ graphql-document-utils query plan -s supergraph.graphql -q supergraph-query.graphql --json
+exit: 0
+stdout:
+{
+  "kind": "QueryPlan",
+  "node": {
+    "kind": "Sequence",
+    "nodes": [
+      {
+        "kind": "Fetch",
+        "serviceName": "products",
+        "variableUsages": [],
+        "operation": "query TopProducts__products__0 { topProducts(first: 3) { __typename upc name weight } }",
+        "operationName": "TopProducts__products__0",
+        "operationKind": "query",
+        "id": null,
+        "inputRewrites": null,
+        "outputRewrites": null,
+        "contextRewrites": null
+      },
+      {
+        "kind": "Flatten",
+        "path": [
+          "topProducts",
+          "@"
+        ],
+        "node": {
+          "kind": "Fetch",
+          "serviceName": "reviews",
+          "requires": [
+            {
+              "kind": "InlineFragment",
+              "typeCondition": "Product",
+              "selections": [
+                {
+                  "kind": "Field",
+                  "name": "__typename"
+                },
+                {
+                  "kind": "Field",
+                  "name": "upc"
+                },
+                {
+                  "kind": "Field",
+                  "name": "weight"
+                }
+              ]
+            }
+          ],
+          "variableUsages": [],
+          "operation": "query TopProducts__reviews__1($representations: [_Any!]!) { _entities(representations: $representations) { ... on Product { shipping reviews { body author { username } } } } }",
+          "operationName": "TopProducts__reviews__1",
+          "operationKind": "query",
+          "id": null,
+          "inputRewrites": null,
+          "outputRewrites": null,
+          "contextRewrites": null
+        }
+      }
+    ]
+  }
+}
+
+$ cat supergraph-query.graphql | graphql-document-utils query plan -s supergraph.graphql --operation TopProducts
+exit: 0
+stdout: as for `graphql-document-utils query plan -s supergraph.graphql -q supergraph-query.graphql`

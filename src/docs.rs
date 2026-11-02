@@ -38,7 +38,7 @@ pub const ABOUT: &str = "Utilities for processing GraphQL query and schema docum
 
 /// Each noun's `about`, which the top-level command list shows. It names the
 /// noun's verbs, so that list shows every command there is.
-pub const QUERY_ABOUT: &str = "Operate on a query document (normalize, focus, strip)";
+pub const QUERY_ABOUT: &str = "Operate on a query document (normalize, focus, strip, plan)";
 pub const SCHEMA_ABOUT: &str =
     "Operate on a schema document (format, focus, prune, sort, split, subgraph)";
 
@@ -58,6 +58,8 @@ Common tasks:
     graphql-document-utils query focus -s schema.graphql -q query.graphql User.email
   Remove a type or field, and everything that references it, from a query
     graphql-document-utils query strip -s schema.graphql -q query.graphql Profile
+  See how Apollo Router would run a query against a supergraph
+    graphql-document-utils query plan -s supergraph.graphql -q supergraph-query.graphql
   Cut a schema down to what a query uses
     graphql-document-utils schema prune -s schema.graphql -q query.graphql
   Extract a type and everything it depends on from a schema
@@ -84,8 +86,9 @@ Run 'graphql-document-utils <noun> <verb> --help' for details, or
 // - exit codes: `docs::the_output_conventions_give_the_exit_codes`, which
 //   checks them against `Error`, and `error::usage_errors_exit_as_clap_does`
 pub const OUTPUT_CONVENTIONS: &str = "\
-Output is a GraphQL document on stdout ending in one newline, or nothing at all
-when nothing survives. Errors, warnings, and notes go to stderr.
+Output is a GraphQL document on stdout (a query plan, for `query plan`) ending
+in one newline, or nothing at all when nothing survives. Errors, warnings, and
+notes go to stderr.
 
 Exit codes: 0 on success, including a valid target that matches nothing; 1 for
 a bad input (unreadable, invalid, unknown target) or a failed write; 2 for a
@@ -300,6 +303,82 @@ Examples:
     | graphql-document-utils query strip -s schema.graphql SearchFilter \\
     | graphql-document-utils query focus -s schema.graphql Profile \\
     | graphql-document-utils query normalize";
+
+pub const QUERY_PLAN_ABOUT: &str =
+    "Show the plan Apollo Router follows to run a query against a supergraph";
+
+// Tested by:
+// - the plan: `query_plan::plans_a_query_across_subgraphs`
+// - Router defaults: `query_plan::subgraph_operations_reuse_selections_as_fragments`,
+//   `query_plan::plans_defer`
+// - JSON: `query_plan::json_is_the_routers`, `query_plan::json_keeps_requires_and_paths`
+// - operations: `query_plan::several_operations_need_a_name`,
+//   `query_plan::plans_the_operation_named`,
+//   `query_plan::an_unknown_operation_suggests_one`
+// - failures: `query_plan::a_query_invalid_against_the_api_schema_is_an_error`,
+//   `query_plan::a_schema_that_is_not_a_supergraph_is_an_error`,
+//   `query_plan::a_blank_schema_is_an_error`,
+//   `query_plan::a_bad_schema_fails_before_the_query_is_read`
+// - override labels: `query_plan::an_override_label_moves_the_field_it_labels`,
+//   `query_plan::an_unknown_override_label_gets_a_note`
+// - blank: `query_plan::a_blank_query_passes_through`
+pub const QUERY_PLAN_LONG_ABOUT: &str = "\
+Show the plan Apollo Router follows to run a query against a supergraph
+
+The plan says which subgraph each part of the query is fetched from, the
+operation sent to each, and which fetches run in sequence or in parallel. It
+comes from the query planner the Router itself uses, from the
+`apollo-federation` crate, set up as the Router's defaults set it up:
+selections a subgraph operation repeats become named fragments, and `@defer` is
+planned rather than ignored.
+
+The plan prints as the planner's text, as the Router returns it to a client
+that sends the `Apollo-Expose-Query-Plan` header. With `--json` it prints as
+the JSON the Router returns beside that text: nodes tagged by `kind`, such as a
+`Fetch` with its `serviceName` and `operation`, without the two fields the
+Router adds to a fetch, `schemaAwareHash` and `authorization`.
+
+A progressive `@override` (one with a label) is planned with its label off, as
+the Router plans a request it has not turned the label on for. Each
+`--override-label` turns one on. A label no `@override` has changes nothing,
+with a note on stderr.
+
+A query of several operations needs `--operation` to name the one to plan. The
+schema must be a supergraph the planner accepts, and the query valid against
+the supergraph's API schema, or the command fails with what the planner said.
+The schema is checked before the query is read. A blank query passes through
+as empty.";
+
+/// The `-s` of `query plan`, a path like the other query commands' `-s`.
+//
+// Tested by: `docs::the_other_document_is_a_required_flag`,
+// `query_plan::a_schema_that_is_not_a_supergraph_is_an_error`
+pub const QUERY_PLAN_SCHEMA: &str = "\
+Supergraph schema file to plan the query
+against. Required.";
+
+// Tested by: `query_plan::several_operations_need_a_name`,
+// `query_plan::plans_the_operation_named`
+pub const QUERY_PLAN_OPERATION: &str = "\
+Operation to plan. Required when the query has
+more than one.";
+
+// Tested by: `query_plan::an_override_label_moves_the_field_it_labels`,
+// `query_plan::an_unknown_override_label_gets_a_note`
+pub const QUERY_PLAN_OVERRIDE_LABEL: &str = "\
+Plan as if this progressive `@override` label
+were on. Repeatable.";
+
+// Tested by: `query_plan::json_is_the_routers`
+pub const QUERY_PLAN_JSON: &str = "\
+Print the plan as the JSON Apollo Router
+returns, rather than as text";
+
+pub const QUERY_PLAN_EXAMPLES: &str = "\
+Examples:
+  graphql-document-utils query plan -s supergraph.graphql -q supergraph-query.graphql
+  graphql-document-utils query plan -s supergraph.graphql -q supergraph-query.graphql --json
+  cat supergraph-query.graphql | graphql-document-utils query plan -s supergraph.graphql --operation TopProducts";
 
 pub const SCHEMA_FORMAT_ABOUT: &str = "Reformat a schema, leaving its contents unchanged";
 
@@ -903,8 +982,9 @@ pub(crate) mod tests {
     }
 
     /// Besides the document it is named for, a command reads at most one
-    /// other, from a required flag that has no default: `query focus` and
-    /// `query strip` the schema, and `schema prune` the query.
+    /// other, from a required flag that has no default: `query focus`,
+    /// `query strip`, and `query plan` the schema, and `schema prune` the
+    /// query.
     #[test]
     fn the_other_document_is_a_required_flag() {
         let mut others = Vec::new();
@@ -921,7 +1001,12 @@ pub(crate) mod tests {
         }
         assert_eq!(
             others,
-            ["query focus -s", "query strip -s", "schema prune -q"]
+            [
+                "query focus -s",
+                "query strip -s",
+                "query plan -s",
+                "schema prune -q"
+            ]
         );
     }
 
@@ -961,7 +1046,7 @@ pub(crate) mod tests {
     /// The source of each module a `Tested by:` comment can name a test in,
     /// by the name it is given there: this crate's modules, its integration
     /// tests, and the library's tests as `graphql_normalize`.
-    const TEST_SOURCES: [(&str, &str); 18] = [
+    const TEST_SOURCES: [(&str, &str); 19] = [
         ("cli", include_str!("../tests/cli.rs")),
         ("docs", include_str!("docs.rs")),
         ("error", include_str!("error.rs")),
@@ -975,6 +1060,7 @@ pub(crate) mod tests {
         ("main", include_str!("main.rs")),
         ("prune", include_str!("prune.rs")),
         ("query_focus", include_str!("query_focus.rs")),
+        ("query_plan", include_str!("query_plan.rs")),
         ("query_strip", include_str!("query_strip.rs")),
         ("query_target", include_str!("query_target.rs")),
         ("skill", include_str!("skill.rs")),
