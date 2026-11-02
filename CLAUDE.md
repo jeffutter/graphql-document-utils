@@ -130,7 +130,7 @@ parse and run every command in it. The details:
   whose errors label a missing file as a stdin failure without its path, and so
   keeps clap-stdin's guard against reading stdin twice
 - `Input::read` refuses to read stdin when it is a terminal, since clap-stdin
-  0.6 would wait on the keyboard forever when the flag was left off:
+  0.8 would wait on the keyboard forever when the flag was left off:
   `Error::NoInput`, exit 2, naming the document and its flag through
   `Kind::flag`. An idle open pipe cannot be detected and is read as usual, as
   filter tools do
@@ -139,7 +139,7 @@ parse and run every command in it. The details:
   `Error::StdinTwice`, exit 2, before either is read, rather than reading the
   schema and then failing on the query, or first waiting on an idle pipe
 - What can be checked without a document is checked before reading it, since
-  reading may block on stdin. clap-stdin 0.6's `FileOrStdin` reads only
+  reading may block on stdin. clap-stdin 0.8's `FileOrStdin` reads only
   through `into_reader`, not at parse time, so `query focus`/`strip` take the
   query as a `read_query` closure that `process()` calls only once every target
   has validated: a bad target fails before stdin is touched, and before the

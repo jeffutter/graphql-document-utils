@@ -13,7 +13,7 @@ repository = "https://github.com/jeffutter/graphql-document-utils"
 apollo-compiler = "1.33.1"
 apollo-federation = "2.19.0"
 clap = { version = "4.6.7", features = ["derive"] }
-clap-stdin = "0.6.0"
+clap-stdin = "0.8.1"
 graphql-normalize = { path = "graphql-normalize-lib" }
 graphql-parser = "0.4.1"
 petgraph = "0.8.2"
